@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "name": "Papa Payment Tracker",
+    "slug": "papa-payment-tracker",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "android": {
+      "package": "com.papa.paymenttracker"
+    }
+  }
+}
