@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import https from "https";
 import { getTodayPayments } from "./payments.js";
 import { parsePaymentSms } from "./parser.js";
 import { savePayments } from "./db.js";
@@ -15,6 +16,24 @@ app.get("/api/health", (_req, res) => {
     ok: true,
     service: "papa-payment-tracker-api",
     mode: process.env.MOCK_MODE === "false" ? "live-google-messages" : "mock-demo"
+  });
+});
+
+// Authentic Hindi Soundbox TTS Streaming
+app.get("/api/tts", (req, res) => {
+  const text = String(req.query.text || "").trim();
+  if (!text) {
+    return res.status(400).json({ error: "Missing text query parameter" });
+  }
+  const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(text)}&tl=hi&client=tw-ob`;
+
+  https.get(ttsUrl, { headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" } }, (stream) => {
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    stream.pipe(res);
+  }).on("error", (err) => {
+    console.error("TTS fetch error:", err.message);
+    res.status(500).json({ error: "TTS generation failed" });
   });
 });
 
