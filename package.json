@@ -11,7 +11,8 @@
     "build:mobile": "npm --prefix mobile run build:web",
     "build": "npm run build:server && npm run build:mobile",
     "typecheck": "npm --prefix mobile run typecheck",
-    "pair": "npm --prefix server run pair"
+    "pair": "npm --prefix server run pair",
+    "postinstall": "npm --prefix mobile install"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"
