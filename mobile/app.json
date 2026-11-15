@@ -12,6 +12,10 @@
       "eas": {
         "projectId": "7cd8307e-c57b-4865-a857-d6fa8d39b704"
       }
-    }
+    },
+    "plugins": [
+      "expo-font",
+      "expo-status-bar"
+    ]
   }
 }

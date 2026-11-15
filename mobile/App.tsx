@@ -86,53 +86,81 @@ const formatRomanHindiAmount = (amount: number) => {
   return `${rupees} rupaye`;
 };
 
+// Global voice cache for browser to prevent empty getVoices() on initial click
+let cachedBrowserVoices: any[] = [];
+if (typeof window !== "undefined" && "speechSynthesis" in window) {
+  cachedBrowserVoices = window.speechSynthesis.getVoices();
+  window.speechSynthesis.onvoiceschanged = () => {
+    cachedBrowserVoices = window.speechSynthesis.getVoices();
+  };
+}
+
 const speakAnnouncement = (amount: number, name: string) => {
   const hasName = name && name !== "Customer / UPI" && !name.toLowerCase().includes("customer");
   const cleanCustomerName = hasName ? name.split(" ")[0] : "";
   const formattedAmount = formatHindiAmount(amount);
 
-  const hindiText = hasName
+  // 1. Native Mobile (Android APK) via expo-speech (Google Hindi TTS)
+  // Slow tempo (0.72) with distinct commas/pauses for natural Indian soundbox delivery
+  const mobileHindiText = hasName
     ? `${cleanCustomerName} से, पापा की दुकान पर, ${formattedAmount}, प्राप्त हुए।`
     : `पापा की दुकान पर, ${formattedAmount}, प्राप्त हुए।`;
 
-  // 1. Native Mobile (Android APK) via expo-speech
   try {
     Speech.stop();
-    Speech.speak(hindiText, {
+    Speech.speak(mobileHindiText, {
       language: "hi-IN",
-      rate: 0.85,
+      rate: 0.72, // Slower, polite tempo so Papa can clearly understand
       pitch: 1.0,
     });
   } catch (err) {
     console.warn("Native speech notice:", err);
   }
 
-  // 2. Web browser fallback
+  // 2. Web browser fallback (Desktop/Laptop with Microsoft Ravi / Indian voice)
   if (Platform.OS === "web" && typeof window !== "undefined" && "speechSynthesis" in window) {
     try {
       window.speechSynthesis.cancel();
-      const voices = window.speechSynthesis.getVoices() || [];
+      const current = window.speechSynthesis.getVoices();
+      const voices = (current && current.length > 0) ? current : cachedBrowserVoices;
+
+      // 1. Look for native Hindi voice (hi-IN)
       const hindiVoice = voices.find(
-        (v) => v.lang === "hi-IN" || v.lang.startsWith("hi") || v.name.includes("हिन्दी")
-      );
-      const indianMaleVoice = voices.find(
         (v) =>
-          (v.lang === "en-IN" || v.lang.includes("IN")) &&
-          (v.name.toLowerCase().includes("ravi") ||
-            v.name.toLowerCase().includes("male") ||
-            v.name.toLowerCase().includes("hemant"))
+          v.lang.startsWith("hi") ||
+          v.name.includes("हिन्दी") ||
+          v.name.toLowerCase().includes("hindi") ||
+          v.name.toLowerCase().includes("kalpana") ||
+          v.name.toLowerCase().includes("hemant")
       );
-      const chosenVoice = hindiVoice || indianMaleVoice;
+
+      // 2. Look for authentic Indian English voice (Microsoft Ravi, Heera, en-IN)
+      const indianVoice = voices.find(
+        (v) =>
+          v.lang === "en-IN" ||
+          v.lang.includes("IN") ||
+          v.name.toLowerCase().includes("ravi") ||
+          v.name.toLowerCase().includes("heera")
+      );
+
+      const chosenVoice = hindiVoice || indianVoice;
       const isPureHindiVoice = Boolean(hindiVoice && chosenVoice === hindiVoice);
 
       let textToSpeak = "";
       if (isPureHindiVoice) {
-        textToSpeak = hindiText;
+        textToSpeak = mobileHindiText;
       } else {
-        const formattedRoman = formatRomanHindiAmount(amount);
+        // Phonetically optimized for Microsoft Ravi / Heera to sound completely Indian:
+        const rupees = Math.floor(amount);
+        const paise = Math.round((amount - rupees) * 100);
+        const amountPhrase =
+          paise > 0
+            ? `${rupees} Rupees and ${paise} paise`
+            : `${rupees} Rupees`;
+
         textToSpeak = hasName
-          ? `${cleanCustomerName} se, Papa ki dukaan par, ${formattedRoman}, praapt hue.`
-          : `Papa ki dukaan par, ${formattedRoman}, praapt hue.`;
+          ? `${cleanCustomerName} se, Papa ki dukaan par, ${amountPhrase}, praapt hue.`
+          : `Papa ki dukaan par, ${amountPhrase}, praapt hue.`;
       }
 
       const utterance = new SpeechSynthesisUtterance(textToSpeak);
@@ -142,8 +170,10 @@ const speakAnnouncement = (amount: number, name: string) => {
       } else {
         utterance.lang = "en-IN";
       }
-      utterance.rate = 0.80;
-      utterance.pitch = 0.95;
+
+      // Slower, clearer Indian soundbox tempo
+      utterance.rate = 0.72; // Slower delivery for easy comprehension
+      utterance.pitch = 0.95; // Natural Indian male pitch
       window.speechSynthesis.speak(utterance);
     } catch {}
   }
