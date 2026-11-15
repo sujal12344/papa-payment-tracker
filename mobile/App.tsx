@@ -101,105 +101,88 @@ if (typeof window !== "undefined" && "speechSynthesis" in window) {
 const speakAnnouncement = (
   amount: number,
   name: string,
-  direction: "credit" | "debit" | "unknown" = "credit",
-  apiBaseUrl?: string
+  direction: "credit" | "debit" | "unknown" = "credit"
 ) => {
   const isDebit = direction === "debit";
   const hasName = name && name !== "Customer / UPI" && !name.toLowerCase().includes("customer");
   const cleanCustomerName = hasName ? name.split(" ")[0] : "";
   const formattedAmount = formatHindiAmount(amount);
 
-  // Accurate Hindi phrasing with pauses for natural soundbox cadence
-  const hindiText = isDebit
+  // 1. Native Mobile (Android APK) via expo-speech (Google Hindi TTS)
+  // Slow tempo (0.72) with distinct commas/pauses for natural Indian soundbox delivery
+  const mobileHindiText = isDebit
     ? (hasName ? `${cleanCustomerName} को, खाते से, ${formattedAmount}, भेजे गए।` : `खाते से, ${formattedAmount}, भेजे गए।`)
     : (hasName ? `${cleanCustomerName} से, पापा की दुकान पर, ${formattedAmount}, प्राप्त हुए।` : `पापा की दुकान पर, ${formattedAmount}, प्राप्त हुए।`);
 
-  // 1. Native Mobile (Android APK) via expo-speech with native Indian Hindi voice selection
   try {
     Speech.stop();
-    Speech.getAvailableVoicesAsync().then((voices) => {
-      const hindiVoices = voices.filter(
-        (v) =>
-          v.language?.toLowerCase().startsWith("hi") ||
-          v.name?.includes("हिन्दी") ||
-          v.name?.toLowerCase().includes("hindi")
-      );
-      const bestVoice =
-        hindiVoices.find((v: any) => v.quality === "Enhanced") ||
-        hindiVoices.find((v: any) => v.name?.toLowerCase().includes("network") || v.name?.toLowerCase().includes("natural")) ||
-        hindiVoices[0];
-
-      Speech.speak(hindiText, {
-        language: "hi-IN",
-        voice: bestVoice?.identifier,
-        rate: 0.75, // Natural slower tempo for clear understanding
-        pitch: 1.0,
-      });
-    }).catch(() => {
-      Speech.speak(hindiText, {
-        language: "hi-IN",
-        rate: 0.75,
-        pitch: 1.0,
-      });
+    Speech.speak(mobileHindiText, {
+      language: "hi-IN",
+      rate: 0.72, // Slower, polite tempo so Papa can clearly understand
+      pitch: 1.0,
     });
   } catch (err) {
     console.warn("Native speech notice:", err);
   }
 
-  // 2. Web browser: stream natural Google Hindi TTS audio directly from backend
-  if (Platform.OS === "web" && typeof window !== "undefined") {
+  // 2. Web browser fallback (Desktop/Laptop with Microsoft Ravi / Indian voice)
+  if (Platform.OS === "web" && typeof window !== "undefined" && "speechSynthesis" in window) {
     try {
-      const targetBase = (apiBaseUrl || getInitialApiBase()).trim().replace(/\/+$/, "");
-      const audioUrl = `${targetBase}/api/tts?text=${encodeURIComponent(hindiText)}`;
-      const audio = new Audio(audioUrl);
-      audio.playbackRate = 0.95; // Slightly slower natural human pace
-      audio.play().catch(() => {
-        // Fallback to Web Speech API if audio autoplay is restricted
-        try {
-          window.speechSynthesis.cancel();
-          const current = window.speechSynthesis.getVoices();
-          const voices = (current && current.length > 0) ? current : cachedBrowserVoices;
+      window.speechSynthesis.cancel();
+      const current = window.speechSynthesis.getVoices();
+      const voices = (current && current.length > 0) ? current : cachedBrowserVoices;
 
-          const hindiVoice = voices.find(
-            (v) =>
-              v.lang.startsWith("hi") ||
-              v.name.includes("हिन्दी") ||
-              v.name.toLowerCase().includes("hindi")
-          );
+      // 1. Look for native Hindi voice (hi-IN)
+      const hindiVoice = voices.find(
+        (v) =>
+          v.lang.startsWith("hi") ||
+          v.name.includes("हिन्दी") ||
+          v.name.toLowerCase().includes("hindi") ||
+          v.name.toLowerCase().includes("kalpana") ||
+          v.name.toLowerCase().includes("hemant")
+      );
 
-          const indianVoice = voices.find(
-            (v) =>
-              v.lang === "en-IN" ||
-              v.lang.includes("IN") ||
-              v.name.toLowerCase().includes("ravi") ||
-              v.name.toLowerCase().includes("heera")
-          );
+      // 2. Look for authentic Indian English voice (Microsoft Ravi, Heera, en-IN)
+      const indianVoice = voices.find(
+        (v) =>
+          v.lang === "en-IN" ||
+          v.lang.includes("IN") ||
+          v.name.toLowerCase().includes("ravi") ||
+          v.name.toLowerCase().includes("heera")
+      );
 
-          const chosenVoice = hindiVoice || indianVoice;
-          let textToSpeak = hindiText;
+      const chosenVoice = hindiVoice || indianVoice;
+      const isPureHindiVoice = Boolean(hindiVoice && chosenVoice === hindiVoice);
 
-          if (!hindiVoice && chosenVoice === indianVoice) {
-            const rupees = Math.floor(amount);
-            const paise = Math.round((amount - rupees) * 100);
-            const amountPhrase =
-              paise > 0 ? `${rupees} Rupees and ${paise} paise` : `${rupees} Rupees`;
-            textToSpeak = isDebit
-              ? (hasName ? `${cleanCustomerName} ko, khate se, ${amountPhrase}, bheje gaye.` : `Khate se, ${amountPhrase}, bheje gaye.`)
-              : (hasName ? `${cleanCustomerName} se, Papa ki dukaan par, ${amountPhrase}, praapt hue.` : `Papa ki dukaan par, ${amountPhrase}, praapt hue.`);
-          }
+      let textToSpeak = "";
+      if (isPureHindiVoice) {
+        textToSpeak = mobileHindiText;
+      } else {
+        // Phonetically optimized for Microsoft Ravi / Heera to sound completely Indian:
+        const rupees = Math.floor(amount);
+        const paise = Math.round((amount - rupees) * 100);
+        const amountPhrase =
+          paise > 0
+            ? `${rupees} Rupees and ${paise} paise`
+            : `${rupees} Rupees`;
 
-          const utterance = new SpeechSynthesisUtterance(textToSpeak);
-          if (chosenVoice) {
-            utterance.voice = chosenVoice;
-            utterance.lang = chosenVoice.lang;
-          } else {
-            utterance.lang = "en-IN";
-          }
-          utterance.rate = 0.75;
-          utterance.pitch = 0.95;
-          window.speechSynthesis.speak(utterance);
-        } catch {}
-      });
+        textToSpeak = isDebit
+          ? (hasName ? `${cleanCustomerName} ko, khate se, ${amountPhrase}, bheje gaye.` : `Khate se, ${amountPhrase}, bheje gaye.`)
+          : (hasName ? `${cleanCustomerName} se, Papa ki dukaan par, ${amountPhrase}, praapt hue.` : `Papa ki dukaan par, ${amountPhrase}, praapt hue.`);
+      }
+
+      const utterance = new SpeechSynthesisUtterance(textToSpeak);
+      if (chosenVoice) {
+        utterance.voice = chosenVoice;
+        utterance.lang = chosenVoice.lang;
+      } else {
+        utterance.lang = "en-IN";
+      }
+
+      // Slower, clearer Indian soundbox tempo
+      utterance.rate = 0.72; // Slower delivery for easy comprehension
+      utterance.pitch = 0.95; // Natural Indian male pitch
+      window.speechSynthesis.speak(utterance);
     } catch {}
   }
 };
@@ -288,7 +271,7 @@ function MainTracker() {
           const firstNew = json.payments[0];
           setNewAlert(`🎉 ${json.newPaymentsCount} Nayi Payment Add Hui!`);
           if (soundEnabled && firstNew && firstNew.direction === "credit") {
-            speakAnnouncement(firstNew.amount, firstNew.payerName, "credit", base);
+            speakAnnouncement(firstNew.amount, firstNew.payerName, "credit");
           }
           setTimeout(() => setNewAlert(null), 6000);
         }
@@ -700,7 +683,7 @@ function MainTracker() {
                 onPress={() => {
                   const next = !soundEnabled;
                   setSoundEnabled(next);
-                  if (next) speakAnnouncement(100, "Test", "credit", apiBase);
+                  if (next) speakAnnouncement(100, "Test", "credit");
                 }}
                 accessibilityLabel="Soundbox toggle"
               >
@@ -1521,8 +1504,7 @@ function MainTracker() {
                     speakAnnouncement(
                       selectedPayment.amount,
                       selectedPayment.payerName,
-                      selectedPayment.direction,
-                      apiBase
+                      selectedPayment.direction
                     )
                   }
                 >

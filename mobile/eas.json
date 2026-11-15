@@ -9,10 +9,28 @@
       "distribution": "internal"
     },
     "preview": {
-      "distribution": "internal"
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleRelease"
+      },
+      "cache": {
+        "key": "v1-gradle-cache",
+        "paths": [
+          ".gradle",
+          "android/.gradle"
+        ]
+      }
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "cache": {
+        "key": "v1-gradle-cache-prod",
+        "paths": [
+          ".gradle",
+          "android/.gradle"
+        ]
+      }
     }
   },
   "submit": {
