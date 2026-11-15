@@ -1,5 +1,6 @@
 import { chromium } from "playwright";
 import { spawn } from "child_process";
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
@@ -33,6 +34,13 @@ async function getOrLaunchPage() {
     // Chrome not already running with CDP
   }
 
+  // Guard against non-existent Chrome executable (e.g. on Linux or cloud hosts like Render)
+  if (!fs.existsSync(chromeExe)) {
+    throw new Error(
+      `Chrome executable not found at ${chromeExe}. Browser scraping requires local Windows Chrome.`
+    );
+  }
+
   // 2. Launch Chrome
   const isHeadless = process.env.HEADLESS === "true";
   const chromeArgs = [
@@ -50,6 +58,10 @@ async function getOrLaunchPage() {
   const chromeProcess = spawn(chromeExe, chromeArgs, {
     detached: true,
     stdio: "ignore"
+  });
+  // Attach error handler to prevent unhandled 'error' event crash
+  chromeProcess.on("error", (err) => {
+    console.warn("⚠️ Chrome process launch warning (ignored):", err.message);
   });
   chromeProcess.unref();
 
@@ -85,6 +97,15 @@ async function getOrLaunchPage() {
  * with scrolling support to capture all bank conversations (Slice, Kotak, etc.).
  */
 export async function getMessagesFromGoogle() {
+  const isRender = Boolean(process.env.RENDER || process.env.IS_RENDER);
+  const isLinux = process.platform !== "win32";
+  const hasChrome = fs.existsSync(chromeExe);
+
+  // In cloud environment (like Render) or Linux without desktop Chrome:
+  // Skip browser scraping, serve live data from Hosted PostgreSQL & Webhooks
+  if (isRender || isLinux || !hasChrome) {
+    return [];
+  }
   const page = await getOrLaunchPage();
 
   if (!page.url().includes("/conversations")) {

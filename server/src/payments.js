@@ -46,7 +46,7 @@ export async function getTodayPayments() {
       ? await getMessagesFromGoogle()
       : getSampleMessages();
   } catch (err) {
-    console.error("Live SMS fetch failed, reading saved records from SQLite:", err.message);
+    console.log("Live SMS fetch bypassed or unavailable, using database records:", err.message);
   }
 
   // Parse raw messages
