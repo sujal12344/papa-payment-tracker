@@ -51,7 +51,7 @@ export function parsePaymentSms(message) {
   if (!amountMatch) return null;
 
   let direction = "unknown";
-  if (/(credited|received|credit to|deposited)/i.test(body)) direction = "credit";
+  if (/(credited|received|credit to|deposited|got)/i.test(body)) direction = "credit";
   if (/(debited|sent|withdrawn|paid|debit from)/i.test(body)) direction = "debit";
 
   if (direction === "unknown") return null;
