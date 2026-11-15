@@ -1,0 +1,19 @@
+{
+  "name": "papa-payment-tracker",
+  "version": "1.0.0",
+  "description": "Papa Payment Tracker - Real-time UPI & Bank SMS Tracker for Merchant Store",
+  "private": true,
+  "scripts": {
+    "dev:server": "npm --prefix server run dev",
+    "dev:mobile": "npm --prefix mobile run start -- --web",
+    "dev": "concurrently -c \"cyan,green\" -n \"server,mobile\" \"npm run dev:server\" \"npm run dev:mobile\"",
+    "build:server": "node --check server/src/index.js",
+    "build:mobile": "npm --prefix mobile run build:web",
+    "build": "npm run build:server && npm run build:mobile",
+    "typecheck": "npm --prefix mobile run typecheck",
+    "pair": "npm --prefix server run pair"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

@@ -2,6 +2,9 @@ import { chromium } from "playwright";
 import { spawn } from "child_process";
 import path from "path";
 import { fileURLToPath } from "url";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const profileDir = path.resolve(__dirname, "../.google-messages-profile");
@@ -15,7 +18,7 @@ async function getOrLaunchPage() {
     return activePage;
   }
 
-  // 1. Try to connect to already running Chrome via remote debugging
+  // 1. Try to connect to already running Chrome via remote debugging (port 9222)
   try {
     activeBrowser = await chromium.connectOverCDP("http://127.0.0.1:9222");
     const contexts = activeBrowser.contexts();
@@ -30,30 +33,33 @@ async function getOrLaunchPage() {
     // Chrome not already running with CDP
   }
 
-  // 2. Launch Chrome if not running
-  const chromeProcess = spawn(
-    chromeExe,
-    [
-      `--remote-debugging-port=9222`,
-      `--user-data-dir=${profileDir}`,
-      "--no-first-run",
-      "--no-default-browser-check",
-      "https://messages.google.com/web/conversations"
-    ],
-    {
-      detached: true,
-      stdio: "ignore"
-    }
-  );
+  // 2. Launch Chrome
+  const isHeadless = process.env.HEADLESS === "true";
+  const chromeArgs = [
+    `--remote-debugging-port=9222`,
+    `--user-data-dir=${profileDir}`,
+    "--no-first-run",
+    "--no-default-browser-check",
+    "https://messages.google.com/web/conversations"
+  ];
+
+  if (isHeadless) {
+    chromeArgs.push("--headless=new");
+  }
+
+  const chromeProcess = spawn(chromeExe, chromeArgs, {
+    detached: true,
+    stdio: "ignore"
+  });
   chromeProcess.unref();
 
   // Wait for CDP to become available
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 25; i++) {
     try {
       activeBrowser = await chromium.connectOverCDP("http://127.0.0.1:9222");
       break;
     } catch {
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((r) => setTimeout(r, 400));
     }
   }
 
@@ -75,7 +81,8 @@ async function getOrLaunchPage() {
 }
 
 /**
- * Scrapes recent SMS messages from Google Messages Web.
+ * Scrapes recent SMS messages from Google Messages Web,
+ * with scrolling support to capture all bank conversations (Slice, Kotak, etc.).
  */
 export async function getMessagesFromGoogle() {
   const page = await getOrLaunchPage();
@@ -87,7 +94,7 @@ export async function getMessagesFromGoogle() {
     });
   }
 
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(1500);
 
   // Check if user is redirected to welcome/auth (meaning not logged in)
   if (
@@ -100,59 +107,127 @@ export async function getMessagesFromGoogle() {
     );
   }
 
-  // Scrape conversation list
-  const messages = await page.evaluate(() => {
-    // Find all conversation list items or conversation links
-    const items = Array.from(
-      document.querySelectorAll(
-        "mws-conversation-list-item, mw-conversation-list-item, [role='listitem'], a[href*='conversation']"
-      )
-    );
+  // Scrape conversation list with automatic virtual list scrolling
+  const messages = await page.evaluate(async () => {
+    const scrollEl =
+      document.querySelector("mws-conversations-list")?.parentElement ||
+      document.querySelector("mws-conversations-list") ||
+      document.querySelector("[role='navigation']") ||
+      window;
 
-    const now = Date.now();
+    const allFound = new Map();
+    const now = new Date();
 
-    return items
-      .map((item) => {
-        // Extract sender name / shortcode
+    // Helper inside evaluate to parse time text into accurate timestamp
+    function parseTimestamp(timeText) {
+      if (!timeText) return now.getTime();
+      const t = timeText.trim();
+
+      // 1. Time today: "12:30 PM", "9:15 AM", "15:40"
+      const matchTime = t.match(/^(\d{1,2}):(\d{2})(?:\s*([AP]M))?$/i);
+      if (matchTime) {
+        let hours = parseInt(matchTime[1], 10);
+        const minutes = parseInt(matchTime[2], 10);
+        const mer = matchTime[3]?.toUpperCase();
+        if (mer === "PM" && hours < 12) hours += 12;
+        if (mer === "AM" && hours === 12) hours = 0;
+        const d = new Date(now);
+        d.setHours(hours, minutes, 0, 0);
+        return d.getTime();
+      }
+
+      // 2. Yesterday
+      if (/yesterday|kal/i.test(t)) {
+        const d = new Date(now);
+        d.setDate(d.getDate() - 1);
+        d.setHours(12, 0, 0, 0);
+        return d.getTime();
+      }
+
+      // 3. Day of week: "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"
+      const days = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+      const dayIndex = days.indexOf(t.toLowerCase().slice(0, 3));
+      if (dayIndex !== -1) {
+        const currentDay = now.getDay();
+        let diff = currentDay - dayIndex;
+        if (diff <= 0) diff += 7; // e.g. today Sunday(0) - Sat(6) = -6 -> +7 = 1 day ago
+        const d = new Date(now);
+        d.setDate(d.getDate() - diff);
+        d.setHours(12, 0, 0, 0);
+        return d.getTime();
+      }
+
+      // 4. Date: "8 Nov", "08-Nov", "31 Oct", "3 Nov"
+      const matchDate = t.match(/(\d{1,2})\s+([A-Za-z]{3})/i);
+      if (matchDate) {
+        const day = parseInt(matchDate[1], 10);
+        const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+        const month = months.indexOf(matchDate[2].toLowerCase());
+        if (month !== -1) {
+          const d = new Date(now);
+          d.setMonth(month, day);
+          d.setHours(12, 0, 0, 0);
+          return d.getTime();
+        }
+      }
+
+      // Fallback: Default to yesterday if unrecognized relative text, to prevent falsely declaring it as "Today"
+      const d = new Date(now);
+      d.setDate(d.getDate() - 1);
+      return d.getTime();
+    }
+
+    // Scroll through the conversation list 7 times to capture older threads
+    for (let scrollStep = 0; scrollStep < 7; scrollStep++) {
+      const items = Array.from(
+        document.querySelectorAll(
+          "mws-conversation-list-item, mw-conversation-list-item, [role='listitem'], a[href*='conversation']"
+        )
+      );
+
+      for (const item of items) {
         const nameEl =
-          item.querySelector(
-            ".name, h3, h2, .contact-name, [data-e2e-contact-name]"
-          ) || item.querySelector(".title");
+          item.querySelector(".name, h3, h2, .contact-name, [data-e2e-contact-name]") ||
+          item.querySelector(".title");
         const senderId = nameEl ? nameEl.textContent.trim() : "";
 
-        // Extract last message text snippet
         const snippetEl =
-          item.querySelector(
-            ".snippet-text, .snippet, .last-message, [data-e2e-conversation-snippet]"
-          ) || item.querySelector(".subtitle");
+          item.querySelector(".snippet-text, .snippet, .last-message, [data-e2e-conversation-snippet]") ||
+          item.querySelector(".subtitle");
         const body = snippetEl ? snippetEl.textContent.trim() : "";
 
-        // Extract timestamp label (e.g. "12:30 PM", "Yesterday")
-        const timeEl = item.querySelector(
-          ".timestamp, [data-e2e-timestamp], time"
-        );
+        const timeEl = item.querySelector(".timestamp, [data-e2e-timestamp], time");
         const timeText = timeEl ? timeEl.textContent.trim() : "";
 
-        let timestamp = now;
-        if (timeText) {
-          const matchTime = timeText.match(/(\d{1,2}):(\d{2})(?:\s*([AP]M))?/i);
-          if (matchTime) {
-            let hours = parseInt(matchTime[1], 10);
-            const minutes = parseInt(matchTime[2], 10);
-            const meridiem = matchTime[3]?.toUpperCase();
-
-            if (meridiem === "PM" && hours < 12) hours += 12;
-            if (meridiem === "AM" && hours === 12) hours = 0;
-
-            const d = new Date();
-            d.setHours(hours, minutes, 0, 0);
-            timestamp = d.getTime();
-          }
+        // Skip non-bank senders right away
+        if (/NSEIPO|VICARE|VIFIN|IRMS|TPower|Vi Finance/i.test(senderId)) {
+          continue;
         }
 
-        return { senderId, body, timestamp };
-      })
-      .filter((m) => m.senderId && m.body);
+        if (senderId && body) {
+          const key = `${senderId}-${body.slice(0, 45)}`;
+          if (!allFound.has(key)) {
+            const timestamp = parseTimestamp(timeText);
+            allFound.set(key, { senderId, body, timestamp });
+          }
+        }
+      }
+
+      // Scroll container down
+      if (scrollEl && scrollEl.scrollBy) {
+        scrollEl.scrollBy(0, 500);
+      } else if (window.scrollBy) {
+        window.scrollBy(0, 500);
+      }
+      await new Promise((r) => setTimeout(r, 400));
+    }
+
+    // Scroll back to top for clean state
+    if (scrollEl && scrollEl.scrollTo) {
+      scrollEl.scrollTo(0, 0);
+    }
+
+    return Array.from(allFound.values());
   });
 
   return messages;
