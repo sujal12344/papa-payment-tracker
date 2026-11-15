@@ -13,6 +13,7 @@ import {
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
+import * as Speech from "expo-speech";
 
 declare const process: any;
 
@@ -45,29 +46,12 @@ type ApiResponse = {
   payments: Payment[];
 };
 
-const PROD_API_URL = "https://papa-payment-server-api.onrender.com";
-
 const getInitialApiBase = () => {
-  if (process.env.EXPO_PUBLIC_API_BASE_URL) {
-    return process.env.EXPO_PUBLIC_API_BASE_URL;
-  }
   if (Platform.OS === "web" && typeof window !== "undefined") {
     const host = window.location.hostname || "localhost";
-    if (host === "localhost" || host === "127.0.0.1") {
-      return `http://${host}:4000`;
-    }
+    return `http://${host}:4000`;
   }
-  return PROD_API_URL;
-};
-
-const formatTime = (timestamp: number) => {
-  if (!timestamp) return "";
-  const d = new Date(timestamp);
-  return d.toLocaleTimeString("en-IN", {
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  });
+  return process.env.EXPO_PUBLIC_API_BASE_URL || "https://papa-payment-server-api.onrender.com";
 };
 
 const money = (value: number) => {
@@ -103,63 +87,65 @@ const formatRomanHindiAmount = (amount: number) => {
 };
 
 const speakAnnouncement = (amount: number, name: string) => {
+  const hasName = name && name !== "Customer / UPI" && !name.toLowerCase().includes("customer");
+  const cleanCustomerName = hasName ? name.split(" ")[0] : "";
+  const formattedAmount = formatHindiAmount(amount);
+
+  const hindiText = hasName
+    ? `${cleanCustomerName} से, पापा की दुकान पर, ${formattedAmount}, प्राप्त हुए।`
+    : `पापा की दुकान पर, ${formattedAmount}, प्राप्त हुए।`;
+
+  // 1. Native Mobile (Android APK) via expo-speech
+  try {
+    Speech.stop();
+    Speech.speak(hindiText, {
+      language: "hi-IN",
+      rate: 0.85,
+      pitch: 1.0,
+    });
+  } catch (err) {
+    console.warn("Native speech notice:", err);
+  }
+
+  // 2. Web browser fallback
   if (Platform.OS === "web" && typeof window !== "undefined" && "speechSynthesis" in window) {
-    window.speechSynthesis.cancel();
+    try {
+      window.speechSynthesis.cancel();
+      const voices = window.speechSynthesis.getVoices() || [];
+      const hindiVoice = voices.find(
+        (v) => v.lang === "hi-IN" || v.lang.startsWith("hi") || v.name.includes("हिन्दी")
+      );
+      const indianMaleVoice = voices.find(
+        (v) =>
+          (v.lang === "en-IN" || v.lang.includes("IN")) &&
+          (v.name.toLowerCase().includes("ravi") ||
+            v.name.toLowerCase().includes("male") ||
+            v.name.toLowerCase().includes("hemant"))
+      );
+      const chosenVoice = hindiVoice || indianMaleVoice;
+      const isPureHindiVoice = Boolean(hindiVoice && chosenVoice === hindiVoice);
 
-    const voices = window.speechSynthesis.getVoices() || [];
+      let textToSpeak = "";
+      if (isPureHindiVoice) {
+        textToSpeak = hindiText;
+      } else {
+        const formattedRoman = formatRomanHindiAmount(amount);
+        textToSpeak = hasName
+          ? `${cleanCustomerName} se, Papa ki dukaan par, ${formattedRoman}, praapt hue.`
+          : `Papa ki dukaan par, ${formattedRoman}, praapt hue.`;
+      }
 
-    // 1. Check if a native Hindi voice (hi-IN) is available (standard on Android phones)
-    const hindiVoice = voices.find(
-      (v) => v.lang === "hi-IN" || v.lang.startsWith("hi") || v.name.includes("हिन्दी")
-    );
-
-    // 2. Check for Indian Male voice (e.g. Microsoft Ravi on Windows, Google en-IN)
-    const indianMaleVoice = voices.find(
-      (v) =>
-        (v.lang === "en-IN" || v.lang.includes("IN")) &&
-        (v.name.toLowerCase().includes("ravi") ||
-          v.name.toLowerCase().includes("male") ||
-          v.name.toLowerCase().includes("hemant"))
-    );
-
-    // 3. Any Indian voice fallback (Microsoft Heera, etc.)
-    const anyIndianVoice = voices.find((v) => v.lang.includes("IN"));
-
-    const chosenVoice = hindiVoice || indianMaleVoice || anyIndianVoice;
-    const isPureHindiVoice = Boolean(hindiVoice && chosenVoice === hindiVoice);
-
-    const hasName = name && name !== "Customer / UPI" && !name.toLowerCase().includes("customer");
-    const cleanCustomerName = hasName ? name.split(" ")[0] : ""; // Use first name for clean speech
-
-    let textToSpeak = "";
-    if (isPureHindiVoice) {
-      // Pure Hindi for Android Google Hindi TTS
-      const formattedAmount = formatHindiAmount(amount);
-      textToSpeak = hasName
-        ? `${cleanCustomerName} से, पापा की दुकान पर, ${formattedAmount}, प्राप्त हुए।`
-        : `पापा की दुकान पर, ${formattedAmount}, प्राप्त हुए।`;
-    } else {
-      // Romanized Indian Hindi for Windows Microsoft Ravi / Indian TTS
-      const formattedAmount = formatRomanHindiAmount(amount);
-      textToSpeak = hasName
-        ? `${cleanCustomerName} se, Papa ki dukaan par, ${formattedAmount}, praapt hue.`
-        : `Papa ki dukaan par, ${formattedAmount}, praapt hue.`;
-    }
-
-    const utterance = new SpeechSynthesisUtterance(textToSpeak);
-
-    if (chosenVoice) {
-      utterance.voice = chosenVoice;
-      utterance.lang = chosenVoice.lang;
-    } else {
-      utterance.lang = "en-IN";
-    }
-
-    // Slow, polite, clear delivery for Papa
-    utterance.rate = 0.80; // Slow, easily understandable tempo
-    utterance.pitch = 0.95; // Natural Indian male pitch
-
-    window.speechSynthesis.speak(utterance);
+      const utterance = new SpeechSynthesisUtterance(textToSpeak);
+      if (chosenVoice) {
+        utterance.voice = chosenVoice;
+        utterance.lang = chosenVoice.lang;
+      } else {
+        utterance.lang = "en-IN";
+      }
+      utterance.rate = 0.80;
+      utterance.pitch = 0.95;
+      window.speechSynthesis.speak(utterance);
+    } catch {}
   }
 };
 
@@ -201,8 +187,8 @@ function MainTracker() {
   const [error, setError] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  // Bank Filter: "slice" | "kotak" | "all" (Slice default as requested)
-  const [bankFilter, setBankFilter] = useState<"all" | "slice" | "kotak">("slice");
+  // Bank Filter: "all" | "slice" | "kotak"
+  const [bankFilter, setBankFilter] = useState<"all" | "slice" | "kotak">("all");
 
   // Date Filter State
   const [activeDateFilter, setActiveDateFilter] = useState<ActiveDateFilter>({ mode: "today" });
@@ -219,8 +205,8 @@ function MainTracker() {
   const [draftMultiDates, setDraftMultiDates] = useState<string[]>([]);
   const [draftSingleDate, setDraftSingleDate] = useState<string | null>(null);
 
-  // Direction & Search filters (Credit / Aaye default as requested)
-  const [typeFilter, setTypeFilter] = useState<"all" | "credit" | "debit">("credit");
+  // Direction & Search filters
+  const [typeFilter, setTypeFilter] = useState<"all" | "credit" | "debit">("all");
   const [searchQuery, setSearchQuery] = useState("");
 
   // Modals & Settings
@@ -229,6 +215,8 @@ function MainTracker() {
   const [customUrlInput, setCustomUrlInput] = useState(apiBase);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [newAlert, setNewAlert] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<string | null>(null);
+  const [testingConnection, setTestingConnection] = useState(false);
 
   const fetchPayments = useCallback(
     async (urlToUse?: string) => {
@@ -269,6 +257,24 @@ function MainTracker() {
       }
     }
   }, [fetchPayments]);
+
+  const testConnection = async (targetUrl: string) => {
+    setTestingConnection(true);
+    setTestResult(null);
+    try {
+      const trimmed = targetUrl.trim().replace(/\/+$/, "");
+      const res = await fetch(`${trimmed}/api/health`);
+      if (res.ok) {
+        setTestResult("success:Connected! Server active hai.");
+      } else {
+        setTestResult(`error:Server error (HTTP ${res.status})`);
+      }
+    } catch {
+      setTestResult("error:Connection fail! URL check karein.");
+    } finally {
+      setTestingConnection(false);
+    }
+  };
 
   const handleSaveSettings = () => {
     const trimmed = customUrlInput.trim().replace(/\/+$/, "");
@@ -399,16 +405,16 @@ function MainTracker() {
     setCalendarOpen(false);
   };
 
-  // 1. Filter payments by Bank and Date first (used for accurate tab counts and hero stats)
-  const bankAndDatePayments = useMemo(() => {
+  // Filter payments by Bank, Date Filter, Direction, Search
+  const filteredPayments = useMemo(() => {
     return allPayments.filter((p) => {
-      // Bank Filter
+      // 1. Bank Filter
       const isSlice = p.senderId?.includes("SLCBNK") || p.rawMessage?.toLowerCase().includes("slice");
       const isKotak = p.senderId?.includes("KOTAK") || p.rawMessage?.toLowerCase().includes("kotak");
       if (bankFilter === "slice" && !isSlice) return false;
       if (bankFilter === "kotak" && !isKotak) return false;
 
-      // Date Filter
+      // 2. Date Filter
       const pDateStr = toDateStr(new Date(p.timestamp));
       if (activeDateFilter.mode === "today") {
         if (pDateStr !== todayStr) return false;
@@ -431,24 +437,11 @@ function MainTracker() {
         if (!activeDateFilter.dates.includes(pDateStr)) return false;
       }
 
-      return true;
-    });
-  }, [allPayments, bankFilter, activeDateFilter, todayStr, yesterdayStr]);
-
-  const totalAayeCount = useMemo(() => {
-    return bankAndDatePayments.filter((p) => p.direction === "credit").length;
-  }, [bankAndDatePayments]);
-
-  const totalGayeCount = useMemo(() => {
-    return bankAndDatePayments.filter((p) => p.direction === "debit").length;
-  }, [bankAndDatePayments]);
-
-  // 2. Filter payments by Direction and Search (for the visible list)
-  const filteredPayments = useMemo(() => {
-    return bankAndDatePayments.filter((p) => {
+      // 3. Direction Filter
       if (typeFilter === "credit" && p.direction !== "credit") return false;
       if (typeFilter === "debit" && p.direction !== "debit") return false;
 
+      // 4. Search Filter
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         const matchesName = p.payerName.toLowerCase().includes(q);
@@ -459,12 +452,12 @@ function MainTracker() {
 
       return true;
     });
-  }, [bankAndDatePayments, typeFilter, searchQuery]);
+  }, [allPayments, bankFilter, activeDateFilter, todayStr, yesterdayStr, typeFilter, searchQuery]);
 
   // Dynamic Card Title and Metrics
   const cardMetrics = useMemo(() => {
-    const credits = bankAndDatePayments.filter((p) => p.direction === "credit");
-    const debits = bankAndDatePayments.filter((p) => p.direction === "debit");
+    const credits = filteredPayments.filter((p) => p.direction === "credit");
+    const debits = filteredPayments.filter((p) => p.direction === "debit");
     const totalReceived = credits.reduce((sum, p) => sum + p.amount, 0);
     const totalDebited = debits.reduce((sum, p) => sum + p.amount, 0);
     const netAmount = totalReceived - totalDebited;
@@ -474,21 +467,25 @@ function MainTracker() {
       displayAmount = totalDebited;
     }
 
-    let title = "AAJ KI KAMAI (RECEIVED)";
+    let title = typeFilter === "debit" ? "Debit Gaye (Outflow)" : "Aaj Ki Kamai (Received)";
     if (bankFilter === "slice") {
-      title = "SLICE UPI KAMAI (RECEIVED)";
+      title = typeFilter === "debit" ? "Slice Debited (Gaye)" : "Slice Bank Kamai (Received)";
     } else if (bankFilter === "kotak") {
-      title = "KOTAK 811 KAMAI (RECEIVED)";
-    }
-
-    if (activeDateFilter.mode === "yesterday") {
-      title = bankFilter === "slice" ? "SLICE KAMAI · KAL" : "KAL KI KAMAI (RECEIVED)";
+      title = typeFilter === "debit" ? "Kotak Debited (Gaye)" : "Kotak 811 Kamai (Received)";
+    } else if (activeDateFilter.mode === "yesterday") {
+      title = typeFilter === "debit" ? "Kal Ke Debits (Gaye)" : "Kal Ki Kamai (Received)";
     } else if (activeDateFilter.mode === "week") {
-      title = "PICHLE 7 DIN KI KAMAI";
+      title = typeFilter === "debit" ? "Pichle 7 Din Debits" : "Pichle 7 Din (Received)";
     } else if (activeDateFilter.mode === "month") {
-      title = "IS MAHINE KI KAMAI";
+      title = typeFilter === "debit" ? "Is Mahine Ke Debits" : "Is Mahine (Received)";
     } else if (activeDateFilter.mode === "all") {
-      title = "KUL KAMAI (ALL TIME)";
+      title = typeFilter === "debit" ? "Kul Debits (Gaye)" : "Kul Kamai (Total Received)";
+    } else if (activeDateFilter.mode === "single") {
+      title = `${formatShortDate(activeDateFilter.date)} (${typeFilter === "debit" ? "Debits" : "Received"})`;
+    } else if (activeDateFilter.mode === "range") {
+      title = `${formatShortDate(activeDateFilter.start)} – ${formatShortDate(activeDateFilter.end)} (${typeFilter === "debit" ? "Debits" : "Received"})`;
+    } else if (activeDateFilter.mode === "multi") {
+      title = `${activeDateFilter.dates.length} Dates (${typeFilter === "debit" ? "Debits" : "Received"})`;
     }
 
     return {
@@ -500,7 +497,7 @@ function MainTracker() {
       creditCount: credits.length,
       debitCount: debits.length,
     };
-  }, [bankAndDatePayments, bankFilter, activeDateFilter, typeFilter]);
+  }, [filteredPayments, bankFilter, activeDateFilter, typeFilter]);
 
   // Clean label for the active Date Filter button
   const activeDateLabel = useMemo(() => {
@@ -659,6 +656,7 @@ function MainTracker() {
                 style={styles.headerActionBtn}
                 onPress={() => {
                   setCustomUrlInput(apiBase);
+                  setTestResult(null);
                   setSettingsOpen(true);
                 }}
                 accessibilityLabel="Settings"
@@ -675,8 +673,9 @@ function MainTracker() {
             </View>
           )}
 
-          {/* Date Selector Row */}
-          <View style={styles.dateFilterRow}>
+          {/* Clean Uncluttered Filter Bar (Single Row) */}
+          <View style={styles.cleanFilterBar}>
+            {/* Primary Date Range / Multi-Date Picker Button */}
             <Pressable
               style={styles.datePickerTriggerBtn}
               onPress={openCalendar}
@@ -687,76 +686,73 @@ function MainTracker() {
               <Text style={styles.datePickerArrow}>▼</Text>
             </Pressable>
 
+            {/* Quick Reset to Today Button (if not on today) */}
             {isCustomActive && (
               <Pressable
                 style={styles.resetTodayBtn}
                 onPress={() => selectPreset("today")}
               >
-                <Text style={styles.resetTodayBtnText}>✕ Aaj (Today)</Text>
+                <Text style={styles.resetTodayBtnText}>✕ Aaj</Text>
               </Pressable>
             )}
-          </View>
 
-          {/* Full-Width Bank Selector Bar (Zero Truncation) */}
-          <View style={styles.bankSegmentRow}>
-            <Pressable
-              style={[
-                styles.bankSegmentBtn,
-                bankFilter === "slice" && styles.bankSegmentBtnSliceActive,
-              ]}
-              onPress={() => setBankFilter("slice")}
-            >
-              <Text
+            {/* Bank Selector Button */}
+            <View style={styles.bankSelectRow}>
+              <Pressable
                 style={[
-                  styles.bankSegmentBtnText,
-                  bankFilter === "slice" && styles.bankSegmentBtnTextSliceActive,
+                  styles.bankTabMini,
+                  bankFilter === "all" && styles.bankTabMiniActive,
                 ]}
+                onPress={() => setBankFilter("all")}
               >
-                💜 Slice UPI
-              </Text>
-            </Pressable>
+                <Text
+                  style={[
+                    styles.bankTabMiniText,
+                    bankFilter === "all" && styles.bankTabMiniTextActive,
+                  ]}
+                >
+                  All
+                </Text>
+              </Pressable>
 
-            <Pressable
-              style={[
-                styles.bankSegmentBtn,
-                bankFilter === "kotak" && styles.bankSegmentBtnKotakActive,
-              ]}
-              onPress={() => setBankFilter("kotak")}
-            >
-              <Text
+              <Pressable
                 style={[
-                  styles.bankSegmentBtnText,
-                  bankFilter === "kotak" && styles.bankSegmentBtnTextKotakActive,
+                  styles.bankTabMini,
+                  bankFilter === "slice" && styles.bankTabSliceActive,
                 ]}
+                onPress={() => setBankFilter("slice")}
               >
-                🔴 Kotak 811
-              </Text>
-            </Pressable>
+                <Text
+                  style={[
+                    styles.bankTabMiniText,
+                    bankFilter === "slice" && styles.bankTabSliceTextActive,
+                  ]}
+                >
+                  💜 Slice
+                </Text>
+              </Pressable>
 
-            <Pressable
-              style={[
-                styles.bankSegmentBtn,
-                bankFilter === "all" && styles.bankSegmentBtnAllActive,
-              ]}
-              onPress={() => setBankFilter("all")}
-            >
-              <Text
+              <Pressable
                 style={[
-                  styles.bankSegmentBtnText,
-                  bankFilter === "all" && styles.bankSegmentBtnTextAllActive,
+                  styles.bankTabMini,
+                  bankFilter === "kotak" && styles.bankTabKotakActive,
                 ]}
+                onPress={() => setBankFilter("kotak")}
               >
-                🏦 Dono Bank
-              </Text>
-            </Pressable>
+                <Text
+                  style={[
+                    styles.bankTabMiniText,
+                    bankFilter === "kotak" && styles.bankTabKotakTextActive,
+                  ]}
+                >
+                  🔴 Kotak
+                </Text>
+              </Pressable>
+            </View>
           </View>
 
           {/* Hero Earnings Card */}
-          <View style={[
-            styles.heroEarningsCard,
-            bankFilter === "slice" && styles.heroCardSliceAccent,
-            bankFilter === "kotak" && styles.heroCardKotakAccent,
-          ]}>
+          <View style={styles.heroEarningsCard}>
             <View style={styles.heroCardHeaderRow}>
               <Text style={styles.heroCardTitle}>{cardMetrics.title}</Text>
               <View style={styles.dbPill}>
@@ -779,7 +775,7 @@ function MainTracker() {
                 </Text>
               </View>
 
-              {cardMetrics.debitCount > 0 && typeFilter !== "credit" && (
+              {cardMetrics.debitCount > 0 && (
                 <View style={[styles.metricChip, styles.debitMetricChip]}>
                   <View style={styles.orangeMetricDot} />
                   <Text style={styles.metricChipText}>
@@ -860,23 +856,6 @@ function MainTracker() {
               <Pressable
                 style={[
                   styles.segmentBtn,
-                  typeFilter === "credit" && styles.segmentBtnCreditActive,
-                ]}
-                onPress={() => setTypeFilter("credit")}
-              >
-                <Text
-                  style={[
-                    styles.segmentBtnText,
-                    typeFilter === "credit" && styles.segmentBtnCreditTextActive,
-                  ]}
-                >
-                  ↓ Aaye ({totalAayeCount})
-                </Text>
-              </Pressable>
-
-              <Pressable
-                style={[
-                  styles.segmentBtn,
                   typeFilter === "all" && styles.segmentBtnActive,
                 ]}
                 onPress={() => setTypeFilter("all")}
@@ -887,24 +866,41 @@ function MainTracker() {
                     typeFilter === "all" && styles.segmentBtnTextActive,
                   ]}
                 >
-                  Sabhi ({bankAndDatePayments.length})
+                  Sabhi ({filteredPayments.length})
                 </Text>
               </Pressable>
 
               <Pressable
                 style={[
                   styles.segmentBtn,
-                  typeFilter === "debit" && styles.segmentBtnDebitActive,
+                  typeFilter === "credit" && styles.segmentBtnActive,
+                ]}
+                onPress={() => setTypeFilter("credit")}
+              >
+                <Text
+                  style={[
+                    styles.segmentBtnText,
+                    typeFilter === "credit" && styles.segmentBtnTextActive,
+                  ]}
+                >
+                  ↓ Aaye
+                </Text>
+              </Pressable>
+
+              <Pressable
+                style={[
+                  styles.segmentBtn,
+                  typeFilter === "debit" && styles.segmentBtnActive,
                 ]}
                 onPress={() => setTypeFilter("debit")}
               >
                 <Text
                   style={[
                     styles.segmentBtnText,
-                    typeFilter === "debit" && styles.segmentBtnDebitTextActive,
+                    typeFilter === "debit" && styles.segmentBtnTextActive,
                   ]}
                 >
-                  ↗ Gaye ({totalGayeCount})
+                  ↗ Gaye
                 </Text>
               </Pressable>
             </View>
@@ -991,7 +987,6 @@ function MainTracker() {
                         key={item.id}
                         style={({ pressed }) => [
                           styles.fintechCard,
-                          isSlice ? styles.fintechCardSlice : styles.fintechCardKotak,
                           pressed && styles.fintechCardPressed,
                         ]}
                         onPress={() => setSelectedPayment(item)}
@@ -999,13 +994,13 @@ function MainTracker() {
                         <View
                           style={[
                             styles.avatarBadge,
-                            isSlice ? styles.avatarSlice : styles.avatarKotak,
+                            isCredit ? styles.avatarCredit : styles.avatarDebit,
                           ]}
                         >
                           <Text
                             style={[
                               styles.avatarInitial,
-                              isSlice ? styles.avatarInitialSlice : styles.avatarInitialKotak,
+                              isCredit ? styles.avatarInitialCredit : styles.avatarInitialDebit,
                             ]}
                           >
                             {initial}
@@ -1029,17 +1024,9 @@ function MainTracker() {
                                   isSlice ? styles.bankTagTextSlice : styles.bankTagTextKotak,
                                 ]}
                               >
-                                {isSlice ? "💜 " : "🔴 "}{bankLabel}
+                                {bankLabel}
                               </Text>
                             </View>
-
-                            {item.timestamp ? (
-                              <View style={styles.timeTagBadge}>
-                                <Text style={styles.timeTagText}>
-                                  ⏰ {formatTime(item.timestamp)}
-                                </Text>
-                              </View>
-                            ) : null}
 
                             {item.transactionId && (
                               <Pressable
@@ -1509,65 +1496,75 @@ function MainTracker() {
         <View style={styles.modalBackdrop}>
           <View style={styles.settingsBox}>
             <View style={styles.settingsHeader}>
-              <View>
-                <Text style={styles.settingsModalTitle}>⚙️ Server Settings</Text>
-                <Text style={styles.settingsModalSubtitle}>API Connection Configuration</Text>
-              </View>
-              <Pressable onPress={() => setSettingsOpen(false)} style={styles.closeModalBtn}>
+              <Text style={styles.settingsModalTitle}>API Server Settings</Text>
+              <Pressable onPress={() => setSettingsOpen(false)}>
                 <Text style={styles.closeModalText}>✕</Text>
               </Pressable>
             </View>
 
-            <Text style={styles.settingsFieldLabel}>Active Backend URL:</Text>
+            <Text style={styles.settingsFieldLabel}>Backend Server URL:</Text>
             <TextInput
               style={styles.settingsInputField}
               value={customUrlInput}
               onChangeText={setCustomUrlInput}
               autoCapitalize="none"
               autoCorrect={false}
-              placeholder="e.g. https://papa-payment-server-api.onrender.com"
+              placeholder="e.g. http://localhost:4000"
             />
 
             <View style={styles.presetButtonsRow}>
               <Pressable
-                style={[
-                  styles.presetButton,
-                  customUrlInput === PROD_API_URL && styles.presetButtonActive,
-                ]}
-                onPress={() => setCustomUrlInput(PROD_API_URL)}
-              >
-                <Text
-                  style={[
-                    styles.presetButtonText,
-                    customUrlInput === PROD_API_URL && styles.presetButtonTextActive,
-                  ]}
-                >
-                  ☁️ Production (Render Cloud)
-                </Text>
-              </Pressable>
-              <Pressable
-                style={[
-                  styles.presetButton,
-                  customUrlInput.includes("localhost") && styles.presetButtonActive,
-                ]}
+                style={styles.presetButton}
                 onPress={() => setCustomUrlInput("http://localhost:4000")}
               >
-                <Text
-                  style={[
-                    styles.presetButtonText,
-                    customUrlInput.includes("localhost") && styles.presetButtonTextActive,
-                  ]}
-                >
-                  💻 Development (Localhost)
-                </Text>
+                <Text style={styles.presetButtonText}>PC Localhost</Text>
+              </Pressable>
+              <Pressable
+                style={styles.presetButton}
+                onPress={() => setCustomUrlInput("http://10.20.10.84:4000")}
+              >
+                <Text style={styles.presetButtonText}>Phone Wi-Fi (10.20.10.84)</Text>
               </Pressable>
             </View>
+
+            <Pressable
+              style={styles.testConnectionButton}
+              onPress={() => testConnection(customUrlInput)}
+              disabled={testingConnection}
+            >
+              {testingConnection ? (
+                <ActivityIndicator color="#0F172A" size="small" />
+              ) : (
+                <Text style={styles.testConnectionButtonText}>Test Connection</Text>
+              )}
+            </Pressable>
+
+            {testResult && (
+              <View
+                style={[
+                  styles.testResultBanner,
+                  testResult.startsWith("success")
+                    ? styles.testResultBannerSuccess
+                    : styles.testResultBannerError,
+                ]}
+              >
+                <Text
+                  style={
+                    testResult.startsWith("success")
+                      ? styles.testResultTextSuccess
+                      : styles.testResultTextError
+                  }
+                >
+                  {testResult.replace(/^(success|error):/, "")}
+                </Text>
+              </View>
+            )}
 
             <Pressable
               style={styles.saveSettingsButton}
               onPress={handleSaveSettings}
             >
-              <Text style={styles.saveSettingsButtonText}>✓ Save & Connect</Text>
+              <Text style={styles.saveSettingsButtonText}>Save & Reconnect</Text>
             </Pressable>
           </View>
         </View>
@@ -1686,12 +1683,13 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "800",
   },
-  // Date Filter Row
-  dateFilterRow: {
+  // Clean Uncluttered Filter Bar
+  cleanFilterBar: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    marginBottom: 8,
+    justifyContent: "space-between",
+    gap: 6,
+    marginBottom: 10,
   },
   datePickerTriggerBtn: {
     flex: 1,
@@ -1699,197 +1697,165 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     backgroundColor: "#FFFFFF",
-    borderWidth: 1.5,
-    borderColor: "#E2E8F0",
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    shadowColor: "#0F172A",
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    shadowColor: "#000",
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 2,
+    shadowRadius: 2,
+    elevation: 1,
   },
   datePickerTriggerText: {
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: "800",
     color: "#0F172A",
     flexShrink: 1,
   },
   datePickerArrow: {
-    fontSize: 11,
+    fontSize: 10,
     color: "#64748B",
-    marginLeft: 6,
+    marginLeft: 4,
   },
   resetTodayBtn: {
     backgroundColor: "#F1F5F9",
-    borderWidth: 1.5,
-    borderColor: "#E2E8F0",
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    borderRadius: 8,
+    paddingHorizontal: 7,
+    paddingVertical: 7,
   },
   resetTodayBtnText: {
-    fontSize: 12,
+    fontSize: 10,
     fontWeight: "800",
     color: "#475569",
   },
-  // Bank Segment Bar (Full Width, Zero Truncation)
-  bankSegmentRow: {
+  bankSelectRow: {
     flexDirection: "row",
-    gap: 8,
-    marginBottom: 12,
+    gap: 3,
+    backgroundColor: "#E2E8F0",
+    borderRadius: 10,
+    padding: 3,
   },
-  bankSegmentBtn: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#F8FAFC",
-    borderWidth: 1.5,
-    borderColor: "#E2E8F0",
-    borderRadius: 12,
-    paddingVertical: 9,
-    paddingHorizontal: 4,
+  bankTabMini: {
+    paddingHorizontal: 7,
+    paddingVertical: 6,
+    borderRadius: 7,
   },
-  bankSegmentBtnSliceActive: {
-    backgroundColor: "#7C3AED",
-    borderColor: "#6D28D9",
-    shadowColor: "#7C3AED",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 5,
-    elevation: 3,
-  },
-  bankSegmentBtnKotakActive: {
-    backgroundColor: "#DC2626",
-    borderColor: "#B91C1C",
-    shadowColor: "#DC2626",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 5,
-    elevation: 3,
-  },
-  bankSegmentBtnAllActive: {
+  bankTabMiniActive: {
     backgroundColor: "#0F172A",
-    borderColor: "#020617",
-    shadowColor: "#0F172A",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 5,
-    elevation: 3,
   },
-  bankSegmentBtnText: {
-    fontSize: 12,
+  bankTabSliceActive: {
+    backgroundColor: "#6D28D9",
+  },
+  bankTabKotakActive: {
+    backgroundColor: "#B91C1C",
+  },
+  bankTabMiniText: {
+    fontSize: 10,
     fontWeight: "700",
     color: "#475569",
   },
-  bankSegmentBtnTextSliceActive: {
+  bankTabMiniTextActive: {
     color: "#FFFFFF",
     fontWeight: "800",
   },
-  bankSegmentBtnTextKotakActive: {
+  bankTabSliceTextActive: {
     color: "#FFFFFF",
     fontWeight: "800",
   },
-  bankSegmentBtnTextAllActive: {
+  bankTabKotakTextActive: {
     color: "#FFFFFF",
     fontWeight: "800",
   },
   // Hero Earnings Card
   heroEarningsCard: {
     backgroundColor: "#064E3B",
-    borderRadius: 20,
-    padding: 18,
-    marginBottom: 12,
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 10,
     shadowColor: "#064E3B",
-    shadowOffset: { width: 0, height: 6 },
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.25,
-    shadowRadius: 12,
-    elevation: 5,
-  },
-  heroCardSliceAccent: {
-    borderTopWidth: 3,
-    borderTopColor: "#A78BFA",
-  },
-  heroCardKotakAccent: {
-    borderTopWidth: 3,
-    borderTopColor: "#F87171",
+    shadowRadius: 10,
+    elevation: 4,
   },
   heroCardHeaderRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 4,
+    marginBottom: 6,
   },
   heroCardTitle: {
     color: "#A7F3D0",
     fontSize: 12,
-    fontWeight: "900",
+    fontWeight: "800",
     textTransform: "uppercase",
-    letterSpacing: 0.8,
+    letterSpacing: 0.5,
   },
   dbPill: {
-    backgroundColor: "rgba(255, 255, 255, 0.16)",
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-    borderRadius: 12,
+    backgroundColor: "rgba(255, 255, 255, 0.15)",
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
   },
   dbPillText: {
     color: "#FFFFFF",
-    fontSize: 10,
-    fontWeight: "800",
+    fontSize: 9,
+    fontWeight: "700",
   },
   amountDisplayRow: {
     flexDirection: "row",
     alignItems: "baseline",
-    marginVertical: 4,
+    marginVertical: 2,
   },
   heroRupeeSymbol: {
-    color: "#6EE7B7",
-    fontSize: 28,
+    color: "#FFFFFF",
+    fontSize: 24,
     fontWeight: "800",
     marginRight: 4,
   },
   heroMainAmount: {
     color: "#FFFFFF",
-    fontSize: 42,
+    fontSize: 36,
     fontWeight: "900",
-    letterSpacing: -1,
+    letterSpacing: -0.5,
   },
   heroMetricsRow: {
     flexDirection: "row",
     gap: 8,
-    marginTop: 6,
-    flexWrap: "wrap",
+    marginTop: 8,
   },
   metricChip: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.16)",
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 12,
+    backgroundColor: "rgba(255, 255, 255, 0.14)",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 20,
+    gap: 6,
   },
-  metricChipText: {
-    color: "#FFFFFF",
-    fontSize: 12,
-    fontWeight: "800",
-    marginLeft: 6,
+  debitMetricChip: {
+    backgroundColor: "rgba(254, 215, 170, 0.2)",
   },
   greenMetricDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
     backgroundColor: "#34D399",
   },
   orangeMetricDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: "#F87171",
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#FB923C",
   },
-  debitMetricChip: {
-    backgroundColor: "rgba(239, 68, 68, 0.25)",
+  metricChipText: {
+    color: "#FFFFFF",
+    fontSize: 11,
+    fontWeight: "700",
   },
   netBalanceRow: {
     flexDirection: "row",
@@ -1993,83 +1959,51 @@ const styles = StyleSheet.create({
   },
   typeSegmentTabs: {
     flexDirection: "row",
-    gap: 8,
-    marginBottom: 8,
+    gap: 6,
+    marginBottom: 6,
   },
   segmentBtn: {
-    flex: 1,
-    paddingVertical: 9,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 12,
-    backgroundColor: "#F1F5F9",
-    borderWidth: 1.5,
-    borderColor: "#E2E8F0",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 7,
+    backgroundColor: "#E2E8F0",
   },
   segmentBtnActive: {
     backgroundColor: "#0F172A",
-    borderColor: "#020617",
-  },
-  segmentBtnCreditActive: {
-    backgroundColor: "#059669",
-    borderColor: "#047857",
-    shadowColor: "#059669",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  segmentBtnDebitActive: {
-    backgroundColor: "#DC2626",
-    borderColor: "#B91C1C",
-    shadowColor: "#DC2626",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 3,
   },
   segmentBtnText: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "700",
     color: "#475569",
   },
   segmentBtnTextActive: {
     color: "#FFFFFF",
-    fontWeight: "800",
-  },
-  segmentBtnCreditTextActive: {
-    color: "#FFFFFF",
-    fontWeight: "900",
-  },
-  segmentBtnDebitTextActive: {
-    color: "#FFFFFF",
-    fontWeight: "900",
   },
   searchBarBox: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderWidth: 1.5,
+    borderRadius: 9,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderWidth: 1,
     borderColor: "#E2E8F0",
   },
   searchIcon: {
-    fontSize: 14,
-    marginRight: 8,
+    fontSize: 12,
+    marginRight: 6,
     color: "#64748B",
   },
   searchFieldInput: {
     flex: 1,
-    fontSize: 13,
+    fontSize: 11,
     color: "#0F172A",
     padding: 0,
   },
   clearSearchBtn: {
-    fontSize: 14,
+    fontSize: 12,
     color: "#94A3B8",
-    paddingHorizontal: 6,
+    paddingHorizontal: 4,
     fontWeight: "700",
   },
   // Transactions Scroll
@@ -2077,38 +2011,38 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   transactionsScrollContent: {
-    paddingBottom: 24,
+    paddingBottom: 20,
   },
   dateGroupContainer: {
-    marginBottom: 14,
+    marginBottom: 12,
   },
   sectionHeaderRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingVertical: 6,
-    paddingHorizontal: 4,
-    marginBottom: 8,
-    borderBottomWidth: 1.5,
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+    marginBottom: 6,
+    borderBottomWidth: 1,
     borderBottomColor: "#E2E8F0",
   },
   sectionDateTitle: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "800",
     color: "#334155",
   },
   sectionSubtotalText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "900",
     color: "#047857",
   },
   sectionAmountsRow: {
     flexDirection: "row",
-    gap: 10,
+    gap: 8,
     alignItems: "center",
   },
   sectionDebitsSubtotalText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "900",
     color: "#DC2626",
   },
@@ -2117,41 +2051,27 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 10,
-    borderWidth: 1.5,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 8,
+    borderWidth: 1,
     borderColor: "#E2E8F0",
-    shadowColor: "#0F172A",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 5,
-    elevation: 2,
-  },
-  fintechCardSlice: {
-    borderLeftWidth: 4.5,
-    borderLeftColor: "#7C3AED",
-  },
-  fintechCardKotak: {
-    borderLeftWidth: 4.5,
-    borderLeftColor: "#DC2626",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 3,
+    elevation: 1,
   },
   fintechCardPressed: {
-    backgroundColor: "#F8FAFC",
+    backgroundColor: "#F1F5F9",
   },
   avatarBadge: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 12,
-  },
-  avatarSlice: {
-    backgroundColor: "#F5F3FF",
-  },
-  avatarKotak: {
-    backgroundColor: "#FEF2F2",
+    marginRight: 10,
   },
   avatarCredit: {
     backgroundColor: "#ECFDF5",
@@ -2160,14 +2080,8 @@ const styles = StyleSheet.create({
     backgroundColor: "#FEF2F2",
   },
   avatarInitial: {
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: "900",
-  },
-  avatarInitialSlice: {
-    color: "#7C3AED",
-  },
-  avatarInitialKotak: {
-    color: "#DC2626",
   },
   avatarInitialCredit: {
     color: "#059669",
@@ -2180,10 +2094,10 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   customerName: {
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: "800",
     color: "#0F172A",
-    marginBottom: 5,
+    marginBottom: 4,
   },
   cardMetaRow: {
     flexDirection: "row",
@@ -2192,47 +2106,34 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
   },
   bankTagBadge: {
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
   },
   bankTagSlice: {
-    backgroundColor: "#F5F3FF",
+    backgroundColor: "#F3E8FF",
   },
   bankTagKotak: {
-    backgroundColor: "#FEF2F2",
+    backgroundColor: "#FEE2E2",
   },
   bankTagText: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: "800",
   },
   bankTagTextSlice: {
-    color: "#7C3AED",
+    color: "#7E22CE",
   },
   bankTagTextKotak: {
-    color: "#DC2626",
-  },
-  timeTagBadge: {
-    backgroundColor: "#F8FAFC",
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  timeTagText: {
-    fontSize: 10,
-    fontWeight: "700",
-    color: "#64748B",
+    color: "#B91C1C",
   },
   upiRefPill: {
     backgroundColor: "#F1F5F9",
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
   },
   upiRefText: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: "700",
     color: "#475569",
   },
@@ -2240,9 +2141,9 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
   },
   cardAmountText: {
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: "900",
-    marginBottom: 4,
+    marginBottom: 3,
   },
   amountCredit: {
     color: "#059669",
@@ -2251,9 +2152,9 @@ const styles = StyleSheet.create({
     color: "#DC2626",
   },
   statusBadge: {
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
     backgroundColor: "#ECFDF5",
   },
   statusBadgeCredit: {
@@ -2263,9 +2164,8 @@ const styles = StyleSheet.create({
     backgroundColor: "#FEF2F2",
   },
   statusBadgeText: {
-    fontSize: 9,
+    fontSize: 8,
     fontWeight: "900",
-    letterSpacing: 0.5,
   },
   statusTextCredit: {
     color: "#047857",
@@ -2308,6 +2208,17 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontSize: 11,
     fontWeight: "700",
+  },
+  fintechFooter: {
+    paddingVertical: 6,
+    alignItems: "center",
+    borderTopWidth: 1,
+    borderTopColor: "#E2E8F0",
+  },
+  footerSyncText: {
+    fontSize: 10,
+    color: "#94A3B8",
+    fontWeight: "600",
   },
   // Calendar Modal Box
   calendarModalBox: {
@@ -2677,107 +2588,99 @@ const styles = StyleSheet.create({
   // Settings Box
   settingsBox: {
     width: "100%",
-    maxWidth: 420,
+    maxWidth: 380,
     backgroundColor: "#FFFFFF",
-    borderRadius: 18,
-    padding: 20,
-    shadowColor: "#0F172A",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.15,
-    shadowRadius: 12,
-    elevation: 6,
+    borderRadius: 16,
+    padding: 16,
   },
   settingsHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "flex-start",
-    marginBottom: 14,
+    alignItems: "center",
+    marginBottom: 10,
   },
   settingsModalTitle: {
-    fontSize: 16,
-    fontWeight: "900",
+    fontSize: 15,
+    fontWeight: "800",
     color: "#0F172A",
   },
-  settingsModalSubtitle: {
-    fontSize: 11,
-    color: "#64748B",
-    fontWeight: "600",
-    marginTop: 2,
-  },
   settingsFieldLabel: {
-    fontSize: 12,
-    fontWeight: "800",
-    color: "#334155",
-    marginBottom: 6,
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#475569",
+    marginBottom: 5,
   },
   settingsInputField: {
-    borderWidth: 1.5,
+    borderWidth: 1,
     borderColor: "#CBD5E1",
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    fontSize: 13,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    fontSize: 12,
     color: "#0F172A",
     backgroundColor: "#F8FAFC",
   },
   presetButtonsRow: {
     flexDirection: "row",
-    gap: 8,
-    marginTop: 10,
+    gap: 6,
+    marginTop: 6,
   },
   presetButton: {
-    flex: 1,
-    backgroundColor: "#F1F5F9",
-    borderWidth: 1.5,
-    borderColor: "#E2E8F0",
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 8,
-    alignItems: "center",
-  },
-  presetButtonActive: {
-    backgroundColor: "#0F172A",
-    borderColor: "#020617",
+    backgroundColor: "#E2E8F0",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
   },
   presetButtonText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#334155",
+  },
+  testConnectionButton: {
+    backgroundColor: "#F1F5F9",
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    borderRadius: 7,
+    paddingVertical: 8,
+    alignItems: "center",
+    marginTop: 8,
+  },
+  testConnectionButtonText: {
     fontSize: 11,
     fontWeight: "700",
-    color: "#475569",
-    textAlign: "center",
+    color: "#0F172A",
   },
-  presetButtonTextActive: {
-    color: "#FFFFFF",
-    fontWeight: "800",
+  testResultBanner: {
+    padding: 7,
+    borderRadius: 6,
+    marginTop: 6,
+  },
+  testResultBannerSuccess: {
+    backgroundColor: "#ECFDF5",
+  },
+  testResultBannerError: {
+    backgroundColor: "#FEF2F2",
+  },
+  testResultTextSuccess: {
+    color: "#047857",
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  testResultTextError: {
+    color: "#B91C1C",
+    fontSize: 10,
+    fontWeight: "700",
   },
   saveSettingsButton: {
     backgroundColor: "#059669",
-    borderRadius: 12,
-    paddingVertical: 12,
+    borderRadius: 9,
+    paddingVertical: 10,
     alignItems: "center",
-    marginTop: 16,
-    shadowColor: "#059669",
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.25,
-    shadowRadius: 6,
-    elevation: 3,
+    marginTop: 10,
   },
   saveSettingsButtonText: {
     color: "#FFFFFF",
-    fontSize: 14,
-    fontWeight: "900",
-  },
-  fintechFooter: {
-    paddingVertical: 10,
-    paddingBottom: Platform.OS === "android" ? 22 : 14,
-    alignItems: "center",
-    justifyContent: "center",
-    borderTopWidth: 1,
-    borderTopColor: "#E2E8F0",
-    backgroundColor: "#FFFFFF",
-  },
-  footerSyncText: {
-    fontSize: 11,
-    color: "#64748B",
-    fontWeight: "700",
+    fontSize: 12,
+    fontWeight: "800",
   },
 });
