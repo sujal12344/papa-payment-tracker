@@ -42,7 +42,7 @@ async function getOrLaunchPage() {
   }
 
   // 2. Launch Chrome
-  const isHeadless = process.env.HEADLESS === "true";
+  const isHeadless = process.env.HEADLESS !== "false"; // Default to true for minimum RAM & computation
   const chromeArgs = [
     `--remote-debugging-port=9222`,
     `--user-data-dir=${profileDir}`,
@@ -65,13 +65,13 @@ async function getOrLaunchPage() {
   });
   chromeProcess.unref();
 
-  // Wait for CDP to become available
-  for (let i = 0; i < 25; i++) {
+  // Wait for CDP to become available (fast timeout to keep API responsive)
+  for (let i = 0; i < 6; i++) {
     try {
       activeBrowser = await chromium.connectOverCDP("http://127.0.0.1:9222");
       break;
     } catch {
-      await new Promise((r) => setTimeout(r, 400));
+      await new Promise((r) => setTimeout(r, 300));
     }
   }
 

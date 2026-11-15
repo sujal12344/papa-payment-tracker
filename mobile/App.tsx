@@ -45,12 +45,29 @@ type ApiResponse = {
   payments: Payment[];
 };
 
+const PROD_API_URL = "https://papa-payment-server-api.onrender.com";
+
 const getInitialApiBase = () => {
+  if (process.env.EXPO_PUBLIC_API_BASE_URL) {
+    return process.env.EXPO_PUBLIC_API_BASE_URL;
+  }
   if (Platform.OS === "web" && typeof window !== "undefined") {
     const host = window.location.hostname || "localhost";
-    return `http://${host}:4000`;
+    if (host === "localhost" || host === "127.0.0.1") {
+      return `http://${host}:4000`;
+    }
   }
-  return process.env.EXPO_PUBLIC_API_BASE_URL || "http://10.20.10.84:4000";
+  return PROD_API_URL;
+};
+
+const formatTime = (timestamp: number) => {
+  if (!timestamp) return "";
+  const d = new Date(timestamp);
+  return d.toLocaleTimeString("en-IN", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
 };
 
 const money = (value: number) => {
@@ -184,8 +201,8 @@ function MainTracker() {
   const [error, setError] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  // Bank Filter: "all" | "slice" | "kotak"
-  const [bankFilter, setBankFilter] = useState<"all" | "slice" | "kotak">("all");
+  // Bank Filter: "slice" | "kotak" | "all" (Slice default as requested)
+  const [bankFilter, setBankFilter] = useState<"all" | "slice" | "kotak">("slice");
 
   // Date Filter State
   const [activeDateFilter, setActiveDateFilter] = useState<ActiveDateFilter>({ mode: "today" });
@@ -202,8 +219,8 @@ function MainTracker() {
   const [draftMultiDates, setDraftMultiDates] = useState<string[]>([]);
   const [draftSingleDate, setDraftSingleDate] = useState<string | null>(null);
 
-  // Direction & Search filters
-  const [typeFilter, setTypeFilter] = useState<"all" | "credit" | "debit">("all");
+  // Direction & Search filters (Credit / Aaye default as requested)
+  const [typeFilter, setTypeFilter] = useState<"all" | "credit" | "debit">("credit");
   const [searchQuery, setSearchQuery] = useState("");
 
   // Modals & Settings
@@ -212,8 +229,6 @@ function MainTracker() {
   const [customUrlInput, setCustomUrlInput] = useState(apiBase);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [newAlert, setNewAlert] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<string | null>(null);
-  const [testingConnection, setTestingConnection] = useState(false);
 
   const fetchPayments = useCallback(
     async (urlToUse?: string) => {
@@ -254,24 +269,6 @@ function MainTracker() {
       }
     }
   }, [fetchPayments]);
-
-  const testConnection = async (targetUrl: string) => {
-    setTestingConnection(true);
-    setTestResult(null);
-    try {
-      const trimmed = targetUrl.trim().replace(/\/+$/, "");
-      const res = await fetch(`${trimmed}/api/health`);
-      if (res.ok) {
-        setTestResult("success:Connected! Server active hai.");
-      } else {
-        setTestResult(`error:Server error (HTTP ${res.status})`);
-      }
-    } catch {
-      setTestResult("error:Connection fail! URL check karein.");
-    } finally {
-      setTestingConnection(false);
-    }
-  };
 
   const handleSaveSettings = () => {
     const trimmed = customUrlInput.trim().replace(/\/+$/, "");
@@ -402,16 +399,16 @@ function MainTracker() {
     setCalendarOpen(false);
   };
 
-  // Filter payments by Bank, Date Filter, Direction, Search
-  const filteredPayments = useMemo(() => {
+  // 1. Filter payments by Bank and Date first (used for accurate tab counts and hero stats)
+  const bankAndDatePayments = useMemo(() => {
     return allPayments.filter((p) => {
-      // 1. Bank Filter
+      // Bank Filter
       const isSlice = p.senderId?.includes("SLCBNK") || p.rawMessage?.toLowerCase().includes("slice");
       const isKotak = p.senderId?.includes("KOTAK") || p.rawMessage?.toLowerCase().includes("kotak");
       if (bankFilter === "slice" && !isSlice) return false;
       if (bankFilter === "kotak" && !isKotak) return false;
 
-      // 2. Date Filter
+      // Date Filter
       const pDateStr = toDateStr(new Date(p.timestamp));
       if (activeDateFilter.mode === "today") {
         if (pDateStr !== todayStr) return false;
@@ -434,11 +431,24 @@ function MainTracker() {
         if (!activeDateFilter.dates.includes(pDateStr)) return false;
       }
 
-      // 3. Direction Filter
+      return true;
+    });
+  }, [allPayments, bankFilter, activeDateFilter, todayStr, yesterdayStr]);
+
+  const totalAayeCount = useMemo(() => {
+    return bankAndDatePayments.filter((p) => p.direction === "credit").length;
+  }, [bankAndDatePayments]);
+
+  const totalGayeCount = useMemo(() => {
+    return bankAndDatePayments.filter((p) => p.direction === "debit").length;
+  }, [bankAndDatePayments]);
+
+  // 2. Filter payments by Direction and Search (for the visible list)
+  const filteredPayments = useMemo(() => {
+    return bankAndDatePayments.filter((p) => {
       if (typeFilter === "credit" && p.direction !== "credit") return false;
       if (typeFilter === "debit" && p.direction !== "debit") return false;
 
-      // 4. Search Filter
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         const matchesName = p.payerName.toLowerCase().includes(q);
@@ -449,12 +459,12 @@ function MainTracker() {
 
       return true;
     });
-  }, [allPayments, bankFilter, activeDateFilter, todayStr, yesterdayStr, typeFilter, searchQuery]);
+  }, [bankAndDatePayments, typeFilter, searchQuery]);
 
   // Dynamic Card Title and Metrics
   const cardMetrics = useMemo(() => {
-    const credits = filteredPayments.filter((p) => p.direction === "credit");
-    const debits = filteredPayments.filter((p) => p.direction === "debit");
+    const credits = bankAndDatePayments.filter((p) => p.direction === "credit");
+    const debits = bankAndDatePayments.filter((p) => p.direction === "debit");
     const totalReceived = credits.reduce((sum, p) => sum + p.amount, 0);
     const totalDebited = debits.reduce((sum, p) => sum + p.amount, 0);
     const netAmount = totalReceived - totalDebited;
@@ -464,25 +474,21 @@ function MainTracker() {
       displayAmount = totalDebited;
     }
 
-    let title = typeFilter === "debit" ? "Debit Gaye (Outflow)" : "Aaj Ki Kamai (Received)";
+    let title = "AAJ KI KAMAI (RECEIVED)";
     if (bankFilter === "slice") {
-      title = typeFilter === "debit" ? "Slice Debited (Gaye)" : "Slice Bank Kamai (Received)";
+      title = "SLICE UPI KAMAI (RECEIVED)";
     } else if (bankFilter === "kotak") {
-      title = typeFilter === "debit" ? "Kotak Debited (Gaye)" : "Kotak 811 Kamai (Received)";
-    } else if (activeDateFilter.mode === "yesterday") {
-      title = typeFilter === "debit" ? "Kal Ke Debits (Gaye)" : "Kal Ki Kamai (Received)";
+      title = "KOTAK 811 KAMAI (RECEIVED)";
+    }
+
+    if (activeDateFilter.mode === "yesterday") {
+      title = bankFilter === "slice" ? "SLICE KAMAI · KAL" : "KAL KI KAMAI (RECEIVED)";
     } else if (activeDateFilter.mode === "week") {
-      title = typeFilter === "debit" ? "Pichle 7 Din Debits" : "Pichle 7 Din (Received)";
+      title = "PICHLE 7 DIN KI KAMAI";
     } else if (activeDateFilter.mode === "month") {
-      title = typeFilter === "debit" ? "Is Mahine Ke Debits" : "Is Mahine (Received)";
+      title = "IS MAHINE KI KAMAI";
     } else if (activeDateFilter.mode === "all") {
-      title = typeFilter === "debit" ? "Kul Debits (Gaye)" : "Kul Kamai (Total Received)";
-    } else if (activeDateFilter.mode === "single") {
-      title = `${formatShortDate(activeDateFilter.date)} (${typeFilter === "debit" ? "Debits" : "Received"})`;
-    } else if (activeDateFilter.mode === "range") {
-      title = `${formatShortDate(activeDateFilter.start)} – ${formatShortDate(activeDateFilter.end)} (${typeFilter === "debit" ? "Debits" : "Received"})`;
-    } else if (activeDateFilter.mode === "multi") {
-      title = `${activeDateFilter.dates.length} Dates (${typeFilter === "debit" ? "Debits" : "Received"})`;
+      title = "KUL KAMAI (ALL TIME)";
     }
 
     return {
@@ -494,7 +500,7 @@ function MainTracker() {
       creditCount: credits.length,
       debitCount: debits.length,
     };
-  }, [filteredPayments, bankFilter, activeDateFilter, typeFilter]);
+  }, [bankAndDatePayments, bankFilter, activeDateFilter, typeFilter]);
 
   // Clean label for the active Date Filter button
   const activeDateLabel = useMemo(() => {
@@ -653,7 +659,6 @@ function MainTracker() {
                 style={styles.headerActionBtn}
                 onPress={() => {
                   setCustomUrlInput(apiBase);
-                  setTestResult(null);
                   setSettingsOpen(true);
                 }}
                 accessibilityLabel="Settings"
@@ -670,9 +675,8 @@ function MainTracker() {
             </View>
           )}
 
-          {/* Clean Uncluttered Filter Bar (Single Row) */}
-          <View style={styles.cleanFilterBar}>
-            {/* Primary Date Range / Multi-Date Picker Button */}
+          {/* Date Selector Row */}
+          <View style={styles.dateFilterRow}>
             <Pressable
               style={styles.datePickerTriggerBtn}
               onPress={openCalendar}
@@ -683,73 +687,76 @@ function MainTracker() {
               <Text style={styles.datePickerArrow}>▼</Text>
             </Pressable>
 
-            {/* Quick Reset to Today Button (if not on today) */}
             {isCustomActive && (
               <Pressable
                 style={styles.resetTodayBtn}
                 onPress={() => selectPreset("today")}
               >
-                <Text style={styles.resetTodayBtnText}>✕ Aaj</Text>
+                <Text style={styles.resetTodayBtnText}>✕ Aaj (Today)</Text>
               </Pressable>
             )}
+          </View>
 
-            {/* Bank Selector Button */}
-            <View style={styles.bankSelectRow}>
-              <Pressable
+          {/* Full-Width Bank Selector Bar (Zero Truncation) */}
+          <View style={styles.bankSegmentRow}>
+            <Pressable
+              style={[
+                styles.bankSegmentBtn,
+                bankFilter === "slice" && styles.bankSegmentBtnSliceActive,
+              ]}
+              onPress={() => setBankFilter("slice")}
+            >
+              <Text
                 style={[
-                  styles.bankTabMini,
-                  bankFilter === "all" && styles.bankTabMiniActive,
+                  styles.bankSegmentBtnText,
+                  bankFilter === "slice" && styles.bankSegmentBtnTextSliceActive,
                 ]}
-                onPress={() => setBankFilter("all")}
               >
-                <Text
-                  style={[
-                    styles.bankTabMiniText,
-                    bankFilter === "all" && styles.bankTabMiniTextActive,
-                  ]}
-                >
-                  All
-                </Text>
-              </Pressable>
+                💜 Slice UPI
+              </Text>
+            </Pressable>
 
-              <Pressable
+            <Pressable
+              style={[
+                styles.bankSegmentBtn,
+                bankFilter === "kotak" && styles.bankSegmentBtnKotakActive,
+              ]}
+              onPress={() => setBankFilter("kotak")}
+            >
+              <Text
                 style={[
-                  styles.bankTabMini,
-                  bankFilter === "slice" && styles.bankTabSliceActive,
+                  styles.bankSegmentBtnText,
+                  bankFilter === "kotak" && styles.bankSegmentBtnTextKotakActive,
                 ]}
-                onPress={() => setBankFilter("slice")}
               >
-                <Text
-                  style={[
-                    styles.bankTabMiniText,
-                    bankFilter === "slice" && styles.bankTabSliceTextActive,
-                  ]}
-                >
-                  💜 Slice
-                </Text>
-              </Pressable>
+                🔴 Kotak 811
+              </Text>
+            </Pressable>
 
-              <Pressable
+            <Pressable
+              style={[
+                styles.bankSegmentBtn,
+                bankFilter === "all" && styles.bankSegmentBtnAllActive,
+              ]}
+              onPress={() => setBankFilter("all")}
+            >
+              <Text
                 style={[
-                  styles.bankTabMini,
-                  bankFilter === "kotak" && styles.bankTabKotakActive,
+                  styles.bankSegmentBtnText,
+                  bankFilter === "all" && styles.bankSegmentBtnTextAllActive,
                 ]}
-                onPress={() => setBankFilter("kotak")}
               >
-                <Text
-                  style={[
-                    styles.bankTabMiniText,
-                    bankFilter === "kotak" && styles.bankTabKotakTextActive,
-                  ]}
-                >
-                  🔴 Kotak
-                </Text>
-              </Pressable>
-            </View>
+                🏦 Dono Bank
+              </Text>
+            </Pressable>
           </View>
 
           {/* Hero Earnings Card */}
-          <View style={styles.heroEarningsCard}>
+          <View style={[
+            styles.heroEarningsCard,
+            bankFilter === "slice" && styles.heroCardSliceAccent,
+            bankFilter === "kotak" && styles.heroCardKotakAccent,
+          ]}>
             <View style={styles.heroCardHeaderRow}>
               <Text style={styles.heroCardTitle}>{cardMetrics.title}</Text>
               <View style={styles.dbPill}>
@@ -772,7 +779,7 @@ function MainTracker() {
                 </Text>
               </View>
 
-              {cardMetrics.debitCount > 0 && (
+              {cardMetrics.debitCount > 0 && typeFilter !== "credit" && (
                 <View style={[styles.metricChip, styles.debitMetricChip]}>
                   <View style={styles.orangeMetricDot} />
                   <Text style={styles.metricChipText}>
@@ -853,6 +860,23 @@ function MainTracker() {
               <Pressable
                 style={[
                   styles.segmentBtn,
+                  typeFilter === "credit" && styles.segmentBtnCreditActive,
+                ]}
+                onPress={() => setTypeFilter("credit")}
+              >
+                <Text
+                  style={[
+                    styles.segmentBtnText,
+                    typeFilter === "credit" && styles.segmentBtnCreditTextActive,
+                  ]}
+                >
+                  ↓ Aaye ({totalAayeCount})
+                </Text>
+              </Pressable>
+
+              <Pressable
+                style={[
+                  styles.segmentBtn,
                   typeFilter === "all" && styles.segmentBtnActive,
                 ]}
                 onPress={() => setTypeFilter("all")}
@@ -863,41 +887,24 @@ function MainTracker() {
                     typeFilter === "all" && styles.segmentBtnTextActive,
                   ]}
                 >
-                  Sabhi ({filteredPayments.length})
+                  Sabhi ({bankAndDatePayments.length})
                 </Text>
               </Pressable>
 
               <Pressable
                 style={[
                   styles.segmentBtn,
-                  typeFilter === "credit" && styles.segmentBtnActive,
-                ]}
-                onPress={() => setTypeFilter("credit")}
-              >
-                <Text
-                  style={[
-                    styles.segmentBtnText,
-                    typeFilter === "credit" && styles.segmentBtnTextActive,
-                  ]}
-                >
-                  ↓ Aaye
-                </Text>
-              </Pressable>
-
-              <Pressable
-                style={[
-                  styles.segmentBtn,
-                  typeFilter === "debit" && styles.segmentBtnActive,
+                  typeFilter === "debit" && styles.segmentBtnDebitActive,
                 ]}
                 onPress={() => setTypeFilter("debit")}
               >
                 <Text
                   style={[
                     styles.segmentBtnText,
-                    typeFilter === "debit" && styles.segmentBtnTextActive,
+                    typeFilter === "debit" && styles.segmentBtnDebitTextActive,
                   ]}
                 >
-                  ↗ Gaye
+                  ↗ Gaye ({totalGayeCount})
                 </Text>
               </Pressable>
             </View>
@@ -984,6 +991,7 @@ function MainTracker() {
                         key={item.id}
                         style={({ pressed }) => [
                           styles.fintechCard,
+                          isSlice ? styles.fintechCardSlice : styles.fintechCardKotak,
                           pressed && styles.fintechCardPressed,
                         ]}
                         onPress={() => setSelectedPayment(item)}
@@ -991,13 +999,13 @@ function MainTracker() {
                         <View
                           style={[
                             styles.avatarBadge,
-                            isCredit ? styles.avatarCredit : styles.avatarDebit,
+                            isSlice ? styles.avatarSlice : styles.avatarKotak,
                           ]}
                         >
                           <Text
                             style={[
                               styles.avatarInitial,
-                              isCredit ? styles.avatarInitialCredit : styles.avatarInitialDebit,
+                              isSlice ? styles.avatarInitialSlice : styles.avatarInitialKotak,
                             ]}
                           >
                             {initial}
@@ -1021,9 +1029,17 @@ function MainTracker() {
                                   isSlice ? styles.bankTagTextSlice : styles.bankTagTextKotak,
                                 ]}
                               >
-                                {bankLabel}
+                                {isSlice ? "💜 " : "🔴 "}{bankLabel}
                               </Text>
                             </View>
+
+                            {item.timestamp ? (
+                              <View style={styles.timeTagBadge}>
+                                <Text style={styles.timeTagText}>
+                                  ⏰ {formatTime(item.timestamp)}
+                                </Text>
+                              </View>
+                            ) : null}
 
                             {item.transactionId && (
                               <Pressable
@@ -1493,75 +1509,65 @@ function MainTracker() {
         <View style={styles.modalBackdrop}>
           <View style={styles.settingsBox}>
             <View style={styles.settingsHeader}>
-              <Text style={styles.settingsModalTitle}>API Server Settings</Text>
-              <Pressable onPress={() => setSettingsOpen(false)}>
+              <View>
+                <Text style={styles.settingsModalTitle}>⚙️ Server Settings</Text>
+                <Text style={styles.settingsModalSubtitle}>API Connection Configuration</Text>
+              </View>
+              <Pressable onPress={() => setSettingsOpen(false)} style={styles.closeModalBtn}>
                 <Text style={styles.closeModalText}>✕</Text>
               </Pressable>
             </View>
 
-            <Text style={styles.settingsFieldLabel}>Backend Server URL:</Text>
+            <Text style={styles.settingsFieldLabel}>Active Backend URL:</Text>
             <TextInput
               style={styles.settingsInputField}
               value={customUrlInput}
               onChangeText={setCustomUrlInput}
               autoCapitalize="none"
               autoCorrect={false}
-              placeholder="e.g. http://localhost:4000"
+              placeholder="e.g. https://papa-payment-server-api.onrender.com"
             />
 
             <View style={styles.presetButtonsRow}>
               <Pressable
-                style={styles.presetButton}
-                onPress={() => setCustomUrlInput("http://localhost:4000")}
-              >
-                <Text style={styles.presetButtonText}>PC Localhost</Text>
-              </Pressable>
-              <Pressable
-                style={styles.presetButton}
-                onPress={() => setCustomUrlInput("http://10.20.10.84:4000")}
-              >
-                <Text style={styles.presetButtonText}>Phone Wi-Fi (10.20.10.84)</Text>
-              </Pressable>
-            </View>
-
-            <Pressable
-              style={styles.testConnectionButton}
-              onPress={() => testConnection(customUrlInput)}
-              disabled={testingConnection}
-            >
-              {testingConnection ? (
-                <ActivityIndicator color="#0F172A" size="small" />
-              ) : (
-                <Text style={styles.testConnectionButtonText}>Test Connection</Text>
-              )}
-            </Pressable>
-
-            {testResult && (
-              <View
                 style={[
-                  styles.testResultBanner,
-                  testResult.startsWith("success")
-                    ? styles.testResultBannerSuccess
-                    : styles.testResultBannerError,
+                  styles.presetButton,
+                  customUrlInput === PROD_API_URL && styles.presetButtonActive,
                 ]}
+                onPress={() => setCustomUrlInput(PROD_API_URL)}
               >
                 <Text
-                  style={
-                    testResult.startsWith("success")
-                      ? styles.testResultTextSuccess
-                      : styles.testResultTextError
-                  }
+                  style={[
+                    styles.presetButtonText,
+                    customUrlInput === PROD_API_URL && styles.presetButtonTextActive,
+                  ]}
                 >
-                  {testResult.replace(/^(success|error):/, "")}
+                  ☁️ Production (Render Cloud)
                 </Text>
-              </View>
-            )}
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.presetButton,
+                  customUrlInput.includes("localhost") && styles.presetButtonActive,
+                ]}
+                onPress={() => setCustomUrlInput("http://localhost:4000")}
+              >
+                <Text
+                  style={[
+                    styles.presetButtonText,
+                    customUrlInput.includes("localhost") && styles.presetButtonTextActive,
+                  ]}
+                >
+                  💻 Development (Localhost)
+                </Text>
+              </Pressable>
+            </View>
 
             <Pressable
               style={styles.saveSettingsButton}
               onPress={handleSaveSettings}
             >
-              <Text style={styles.saveSettingsButtonText}>Save & Reconnect</Text>
+              <Text style={styles.saveSettingsButtonText}>✓ Save & Connect</Text>
             </Pressable>
           </View>
         </View>
@@ -1680,13 +1686,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "800",
   },
-  // Clean Uncluttered Filter Bar
-  cleanFilterBar: {
+  // Date Filter Row
+  dateFilterRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    gap: 6,
-    marginBottom: 10,
+    gap: 8,
+    marginBottom: 8,
   },
   datePickerTriggerBtn: {
     flex: 1,
@@ -1694,165 +1699,197 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#CBD5E1",
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    shadowColor: "#000",
+    borderWidth: 1.5,
+    borderColor: "#E2E8F0",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    shadowColor: "#0F172A",
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
+    shadowRadius: 3,
+    elevation: 2,
   },
   datePickerTriggerText: {
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: "800",
     color: "#0F172A",
     flexShrink: 1,
   },
   datePickerArrow: {
-    fontSize: 10,
+    fontSize: 11,
     color: "#64748B",
-    marginLeft: 4,
+    marginLeft: 6,
   },
   resetTodayBtn: {
     backgroundColor: "#F1F5F9",
-    borderWidth: 1,
-    borderColor: "#CBD5E1",
-    borderRadius: 8,
-    paddingHorizontal: 7,
-    paddingVertical: 7,
+    borderWidth: 1.5,
+    borderColor: "#E2E8F0",
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
   },
   resetTodayBtnText: {
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: "800",
     color: "#475569",
   },
-  bankSelectRow: {
+  // Bank Segment Bar (Full Width, Zero Truncation)
+  bankSegmentRow: {
     flexDirection: "row",
-    gap: 3,
-    backgroundColor: "#E2E8F0",
-    borderRadius: 10,
-    padding: 3,
+    gap: 8,
+    marginBottom: 12,
   },
-  bankTabMini: {
-    paddingHorizontal: 7,
-    paddingVertical: 6,
-    borderRadius: 7,
+  bankSegmentBtn: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1.5,
+    borderColor: "#E2E8F0",
+    borderRadius: 12,
+    paddingVertical: 9,
+    paddingHorizontal: 4,
   },
-  bankTabMiniActive: {
+  bankSegmentBtnSliceActive: {
+    backgroundColor: "#7C3AED",
+    borderColor: "#6D28D9",
+    shadowColor: "#7C3AED",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+    elevation: 3,
+  },
+  bankSegmentBtnKotakActive: {
+    backgroundColor: "#DC2626",
+    borderColor: "#B91C1C",
+    shadowColor: "#DC2626",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+    elevation: 3,
+  },
+  bankSegmentBtnAllActive: {
     backgroundColor: "#0F172A",
+    borderColor: "#020617",
+    shadowColor: "#0F172A",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+    elevation: 3,
   },
-  bankTabSliceActive: {
-    backgroundColor: "#6D28D9",
-  },
-  bankTabKotakActive: {
-    backgroundColor: "#B91C1C",
-  },
-  bankTabMiniText: {
-    fontSize: 10,
+  bankSegmentBtnText: {
+    fontSize: 12,
     fontWeight: "700",
     color: "#475569",
   },
-  bankTabMiniTextActive: {
+  bankSegmentBtnTextSliceActive: {
     color: "#FFFFFF",
     fontWeight: "800",
   },
-  bankTabSliceTextActive: {
+  bankSegmentBtnTextKotakActive: {
     color: "#FFFFFF",
     fontWeight: "800",
   },
-  bankTabKotakTextActive: {
+  bankSegmentBtnTextAllActive: {
     color: "#FFFFFF",
     fontWeight: "800",
   },
   // Hero Earnings Card
   heroEarningsCard: {
     backgroundColor: "#064E3B",
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 10,
+    borderRadius: 20,
+    padding: 18,
+    marginBottom: 12,
     shadowColor: "#064E3B",
-    shadowOffset: { width: 0, height: 4 },
+    shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.25,
-    shadowRadius: 10,
-    elevation: 4,
+    shadowRadius: 12,
+    elevation: 5,
+  },
+  heroCardSliceAccent: {
+    borderTopWidth: 3,
+    borderTopColor: "#A78BFA",
+  },
+  heroCardKotakAccent: {
+    borderTopWidth: 3,
+    borderTopColor: "#F87171",
   },
   heroCardHeaderRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 6,
+    marginBottom: 4,
   },
   heroCardTitle: {
     color: "#A7F3D0",
     fontSize: 12,
-    fontWeight: "800",
+    fontWeight: "900",
     textTransform: "uppercase",
-    letterSpacing: 0.5,
+    letterSpacing: 0.8,
   },
   dbPill: {
-    backgroundColor: "rgba(255, 255, 255, 0.15)",
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 10,
+    backgroundColor: "rgba(255, 255, 255, 0.16)",
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 12,
   },
   dbPillText: {
     color: "#FFFFFF",
-    fontSize: 9,
-    fontWeight: "700",
+    fontSize: 10,
+    fontWeight: "800",
   },
   amountDisplayRow: {
     flexDirection: "row",
     alignItems: "baseline",
-    marginVertical: 2,
+    marginVertical: 4,
   },
   heroRupeeSymbol: {
-    color: "#FFFFFF",
-    fontSize: 24,
+    color: "#6EE7B7",
+    fontSize: 28,
     fontWeight: "800",
     marginRight: 4,
   },
   heroMainAmount: {
     color: "#FFFFFF",
-    fontSize: 36,
+    fontSize: 42,
     fontWeight: "900",
-    letterSpacing: -0.5,
+    letterSpacing: -1,
   },
   heroMetricsRow: {
     flexDirection: "row",
     gap: 8,
-    marginTop: 8,
+    marginTop: 6,
+    flexWrap: "wrap",
   },
   metricChip: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.14)",
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 20,
-    gap: 6,
-  },
-  debitMetricChip: {
-    backgroundColor: "rgba(254, 215, 170, 0.2)",
-  },
-  greenMetricDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: "#34D399",
-  },
-  orangeMetricDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: "#FB923C",
+    backgroundColor: "rgba(255, 255, 255, 0.16)",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
   },
   metricChipText: {
     color: "#FFFFFF",
-    fontSize: 11,
-    fontWeight: "700",
+    fontSize: 12,
+    fontWeight: "800",
+    marginLeft: 6,
+  },
+  greenMetricDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#34D399",
+  },
+  orangeMetricDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#F87171",
+  },
+  debitMetricChip: {
+    backgroundColor: "rgba(239, 68, 68, 0.25)",
   },
   netBalanceRow: {
     flexDirection: "row",
@@ -1956,51 +1993,83 @@ const styles = StyleSheet.create({
   },
   typeSegmentTabs: {
     flexDirection: "row",
-    gap: 6,
-    marginBottom: 6,
+    gap: 8,
+    marginBottom: 8,
   },
   segmentBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 7,
-    backgroundColor: "#E2E8F0",
+    flex: 1,
+    paddingVertical: 9,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+    backgroundColor: "#F1F5F9",
+    borderWidth: 1.5,
+    borderColor: "#E2E8F0",
   },
   segmentBtnActive: {
     backgroundColor: "#0F172A",
+    borderColor: "#020617",
+  },
+  segmentBtnCreditActive: {
+    backgroundColor: "#059669",
+    borderColor: "#047857",
+    shadowColor: "#059669",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  segmentBtnDebitActive: {
+    backgroundColor: "#DC2626",
+    borderColor: "#B91C1C",
+    shadowColor: "#DC2626",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 3,
   },
   segmentBtnText: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: "700",
     color: "#475569",
   },
   segmentBtnTextActive: {
     color: "#FFFFFF",
+    fontWeight: "800",
+  },
+  segmentBtnCreditTextActive: {
+    color: "#FFFFFF",
+    fontWeight: "900",
+  },
+  segmentBtnDebitTextActive: {
+    color: "#FFFFFF",
+    fontWeight: "900",
   },
   searchBarBox: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderRadius: 9,
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderWidth: 1.5,
     borderColor: "#E2E8F0",
   },
   searchIcon: {
-    fontSize: 12,
-    marginRight: 6,
+    fontSize: 14,
+    marginRight: 8,
     color: "#64748B",
   },
   searchFieldInput: {
     flex: 1,
-    fontSize: 11,
+    fontSize: 13,
     color: "#0F172A",
     padding: 0,
   },
   clearSearchBtn: {
-    fontSize: 12,
+    fontSize: 14,
     color: "#94A3B8",
-    paddingHorizontal: 4,
+    paddingHorizontal: 6,
     fontWeight: "700",
   },
   // Transactions Scroll
@@ -2008,38 +2077,38 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   transactionsScrollContent: {
-    paddingBottom: 20,
+    paddingBottom: 24,
   },
   dateGroupContainer: {
-    marginBottom: 12,
+    marginBottom: 14,
   },
   sectionHeaderRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingVertical: 4,
-    paddingHorizontal: 2,
-    marginBottom: 6,
-    borderBottomWidth: 1,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    marginBottom: 8,
+    borderBottomWidth: 1.5,
     borderBottomColor: "#E2E8F0",
   },
   sectionDateTitle: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: "800",
     color: "#334155",
   },
   sectionSubtotalText: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: "900",
     color: "#047857",
   },
   sectionAmountsRow: {
     flexDirection: "row",
-    gap: 8,
+    gap: 10,
     alignItems: "center",
   },
   sectionDebitsSubtotalText: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: "900",
     color: "#DC2626",
   },
@@ -2048,27 +2117,41 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 8,
-    borderWidth: 1,
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 10,
+    borderWidth: 1.5,
     borderColor: "#E2E8F0",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
-    shadowRadius: 3,
-    elevation: 1,
+    shadowColor: "#0F172A",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 5,
+    elevation: 2,
+  },
+  fintechCardSlice: {
+    borderLeftWidth: 4.5,
+    borderLeftColor: "#7C3AED",
+  },
+  fintechCardKotak: {
+    borderLeftWidth: 4.5,
+    borderLeftColor: "#DC2626",
   },
   fintechCardPressed: {
-    backgroundColor: "#F1F5F9",
+    backgroundColor: "#F8FAFC",
   },
   avatarBadge: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 10,
+    marginRight: 12,
+  },
+  avatarSlice: {
+    backgroundColor: "#F5F3FF",
+  },
+  avatarKotak: {
+    backgroundColor: "#FEF2F2",
   },
   avatarCredit: {
     backgroundColor: "#ECFDF5",
@@ -2077,8 +2160,14 @@ const styles = StyleSheet.create({
     backgroundColor: "#FEF2F2",
   },
   avatarInitial: {
-    fontSize: 15,
+    fontSize: 17,
     fontWeight: "900",
+  },
+  avatarInitialSlice: {
+    color: "#7C3AED",
+  },
+  avatarInitialKotak: {
+    color: "#DC2626",
   },
   avatarInitialCredit: {
     color: "#059669",
@@ -2091,10 +2180,10 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   customerName: {
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: "800",
     color: "#0F172A",
-    marginBottom: 4,
+    marginBottom: 5,
   },
   cardMetaRow: {
     flexDirection: "row",
@@ -2103,34 +2192,47 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
   },
   bankTagBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 6,
   },
   bankTagSlice: {
-    backgroundColor: "#F3E8FF",
+    backgroundColor: "#F5F3FF",
   },
   bankTagKotak: {
-    backgroundColor: "#FEE2E2",
+    backgroundColor: "#FEF2F2",
   },
   bankTagText: {
-    fontSize: 9,
+    fontSize: 10,
     fontWeight: "800",
   },
   bankTagTextSlice: {
-    color: "#7E22CE",
+    color: "#7C3AED",
   },
   bankTagTextKotak: {
-    color: "#B91C1C",
+    color: "#DC2626",
+  },
+  timeTagBadge: {
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  timeTagText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#64748B",
   },
   upiRefPill: {
     backgroundColor: "#F1F5F9",
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 6,
   },
   upiRefText: {
-    fontSize: 9,
+    fontSize: 10,
     fontWeight: "700",
     color: "#475569",
   },
@@ -2138,9 +2240,9 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
   },
   cardAmountText: {
-    fontSize: 15,
+    fontSize: 17,
     fontWeight: "900",
-    marginBottom: 3,
+    marginBottom: 4,
   },
   amountCredit: {
     color: "#059669",
@@ -2149,9 +2251,9 @@ const styles = StyleSheet.create({
     color: "#DC2626",
   },
   statusBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 6,
     backgroundColor: "#ECFDF5",
   },
   statusBadgeCredit: {
@@ -2161,8 +2263,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#FEF2F2",
   },
   statusBadgeText: {
-    fontSize: 8,
+    fontSize: 9,
     fontWeight: "900",
+    letterSpacing: 0.5,
   },
   statusTextCredit: {
     color: "#047857",
@@ -2205,17 +2308,6 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontSize: 11,
     fontWeight: "700",
-  },
-  fintechFooter: {
-    paddingVertical: 6,
-    alignItems: "center",
-    borderTopWidth: 1,
-    borderTopColor: "#E2E8F0",
-  },
-  footerSyncText: {
-    fontSize: 10,
-    color: "#94A3B8",
-    fontWeight: "600",
   },
   // Calendar Modal Box
   calendarModalBox: {
@@ -2585,99 +2677,107 @@ const styles = StyleSheet.create({
   // Settings Box
   settingsBox: {
     width: "100%",
-    maxWidth: 380,
+    maxWidth: 420,
     backgroundColor: "#FFFFFF",
-    borderRadius: 16,
-    padding: 16,
+    borderRadius: 18,
+    padding: 20,
+    shadowColor: "#0F172A",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 6,
   },
   settingsHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 10,
+    alignItems: "flex-start",
+    marginBottom: 14,
   },
   settingsModalTitle: {
-    fontSize: 15,
-    fontWeight: "800",
+    fontSize: 16,
+    fontWeight: "900",
     color: "#0F172A",
   },
-  settingsFieldLabel: {
+  settingsModalSubtitle: {
     fontSize: 11,
-    fontWeight: "700",
-    color: "#475569",
-    marginBottom: 5,
+    color: "#64748B",
+    fontWeight: "600",
+    marginTop: 2,
+  },
+  settingsFieldLabel: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#334155",
+    marginBottom: 6,
   },
   settingsInputField: {
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: "#CBD5E1",
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    fontSize: 12,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    fontSize: 13,
     color: "#0F172A",
     backgroundColor: "#F8FAFC",
   },
   presetButtonsRow: {
     flexDirection: "row",
-    gap: 6,
-    marginTop: 6,
+    gap: 8,
+    marginTop: 10,
   },
   presetButton: {
-    backgroundColor: "#E2E8F0",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
+    flex: 1,
+    backgroundColor: "#F1F5F9",
+    borderWidth: 1.5,
+    borderColor: "#E2E8F0",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignItems: "center",
+  },
+  presetButtonActive: {
+    backgroundColor: "#0F172A",
+    borderColor: "#020617",
   },
   presetButtonText: {
-    fontSize: 10,
-    fontWeight: "700",
-    color: "#334155",
-  },
-  testConnectionButton: {
-    backgroundColor: "#F1F5F9",
-    borderWidth: 1,
-    borderColor: "#CBD5E1",
-    borderRadius: 7,
-    paddingVertical: 8,
-    alignItems: "center",
-    marginTop: 8,
-  },
-  testConnectionButtonText: {
     fontSize: 11,
     fontWeight: "700",
-    color: "#0F172A",
+    color: "#475569",
+    textAlign: "center",
   },
-  testResultBanner: {
-    padding: 7,
-    borderRadius: 6,
-    marginTop: 6,
-  },
-  testResultBannerSuccess: {
-    backgroundColor: "#ECFDF5",
-  },
-  testResultBannerError: {
-    backgroundColor: "#FEF2F2",
-  },
-  testResultTextSuccess: {
-    color: "#047857",
-    fontSize: 10,
-    fontWeight: "700",
-  },
-  testResultTextError: {
-    color: "#B91C1C",
-    fontSize: 10,
-    fontWeight: "700",
+  presetButtonTextActive: {
+    color: "#FFFFFF",
+    fontWeight: "800",
   },
   saveSettingsButton: {
     backgroundColor: "#059669",
-    borderRadius: 9,
-    paddingVertical: 10,
+    borderRadius: 12,
+    paddingVertical: 12,
     alignItems: "center",
-    marginTop: 10,
+    marginTop: 16,
+    shadowColor: "#059669",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 3,
   },
   saveSettingsButtonText: {
     color: "#FFFFFF",
-    fontSize: 12,
-    fontWeight: "800",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  fintechFooter: {
+    paddingVertical: 10,
+    paddingBottom: Platform.OS === "android" ? 22 : 14,
+    alignItems: "center",
+    justifyContent: "center",
+    borderTopWidth: 1,
+    borderTopColor: "#E2E8F0",
+    backgroundColor: "#FFFFFF",
+  },
+  footerSyncText: {
+    fontSize: 11,
+    color: "#64748B",
+    fontWeight: "700",
   },
 });
